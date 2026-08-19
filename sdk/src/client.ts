@@ -47,7 +47,7 @@ export class AgentDeploy {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.#apiKey}`,
-          "User-Agent": "@agentdeploy/sdk/0.1.0",
+          "User-Agent": "@agentdeploy-io/sdk/0.1.0",
           ...(init.headers ?? {}),
         },
       });
@@ -169,7 +169,7 @@ export class AgentDeploy {
             "Content-Type": "application/json",
             Authorization: `Bearer ${this.#apiKey}`,
             Accept: "text/event-stream",
-            "User-Agent": "@agentdeploy/sdk/0.1.0",
+            "User-Agent": "@agentdeploy-io/sdk/0.1.0",
           },
           body: JSON.stringify({
             messages: options.messages,

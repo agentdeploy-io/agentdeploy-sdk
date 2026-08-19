@@ -1,17 +1,17 @@
-# @agentdeploy/edge-sdk
+# @agentdeploy-io/edge-sdk
 
 Build AI agents on Cloudflare's edge with AgentDeploy billing, telemetry, and gateway integration.
 
 ## Quick Start
 
 ```bash
-npm install @agentdeploy/edge-sdk agents @cloudflare/ai-chat ai zod
+npm install @agentdeploy-io/edge-sdk agents @cloudflare/ai-chat ai zod
 ```
 
 ## Create a Chat Agent
 
 ```typescript
-import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const Assistant = createChatAgent({
   name: "assistant",
@@ -25,7 +25,7 @@ export default createHandler(Assistant);
 ## Add Tools
 
 ```typescript
-import { createChatAgent, createHandler, defineTool } from "@agentdeploy/edge-sdk";
+import { createChatAgent, createHandler, defineTool } from "@agentdeploy-io/edge-sdk";
 import { z } from "zod";
 
 const checkInventory = defineTool({
@@ -63,7 +63,7 @@ export default createHandler(CommerceAgent);
 ## Scheduled Agents
 
 ```typescript
-import { createAgent, createHandler } from "@agentdeploy/edge-sdk";
+import { createAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const Monitor = createAgent({
   name: "monitor",
@@ -86,7 +86,7 @@ export default createHandler(Monitor);
 ## MCP Integration
 
 ```typescript
-import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const ResearchAgent = createChatAgent({
   name: "research",
@@ -109,7 +109,7 @@ export default createHandler(ResearchAgent);
 ## Secret Access
 
 ```typescript
-import { createAgent, createHandler, useSecrets } from "@agentdeploy/edge-sdk";
+import { createAgent, createHandler, useSecrets } from "@agentdeploy-io/edge-sdk";
 
 export const PaymentAgent = createAgent({
   name: "payments",
@@ -127,7 +127,7 @@ export default createHandler(PaymentAgent);
 ## Multi-Agent Routing
 
 ```typescript
-import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const Support = createChatAgent({
   name: "support",
@@ -189,7 +189,7 @@ Creates the worker fetch handler with agent routing and health checks.
 ## How It Works
 
 1. You write agents using the SDK's `createAgent()` / `createChatAgent()`
-2. The `@agentdeploy/cli` bundles your code with esbuild into a single ESM module
+2. The `@agentdeploy-io/cli` bundles your code with esbuild into a single ESM module
 3. The platform's renderer injects `AD_DEPLOYMENT_ID`, `AD_MODEL`, `AD_GATEWAY_BASE_URL` constants
 4. The deploy pipeline auto-detects Durable Object classes and configures bindings + migrations
 5. All LLM calls route through the AgentDeploy gateway for billing and token metering

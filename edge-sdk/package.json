@@ -1,5 +1,5 @@
 {
-  "name": "@agentdeploy/edge-sdk",
+  "name": "@agentdeploy-io/edge-sdk",
   "version": "0.1.0",
   "description": "Build AI agents on Cloudflare's edge with AgentDeploy billing, telemetry, and gateway integration.",
   "license": "MIT",
@@ -34,7 +34,7 @@
     "workers"
   ],
   "dependencies": {
-    "@agentdeploy/agents": "file:../agents",
+    "@agentdeploy-io/agents": "^0.1.0",
     "@ai-sdk/openai": "^1.0.0",
     "@ai-sdk/openai-compatible": "^1.0.46",
     "@cloudflare/ai-chat": "^0.9.0",

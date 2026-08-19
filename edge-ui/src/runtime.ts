@@ -1,5 +1,5 @@
 /**
- * @agentdeploy/edge-ui/runtime — Server-side UI asset handling
+ * @agentdeploy-io/edge-ui/runtime — Server-side UI asset handling
  *
  * Provides a fetch handler that serves static UI assets from within
  * a Cloudflare Worker. When deployed, UI files are bundled as
@@ -11,7 +11,7 @@
  * @example
  * ```ts
  * // src/server.ts
- * import { createUIHandler } from "@agentdeploy/edge-ui/runtime";
+ * import { createUIHandler } from "@agentdeploy-io/edge-ui/runtime";
  *
  * export default {
  *   async fetch(request, env) {

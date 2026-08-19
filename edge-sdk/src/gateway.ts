@@ -30,7 +30,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
  *
  * @example
  * ```ts
- * import { useGateway } from "@agentdeploy/edge-sdk";
+ * import { useGateway } from "@agentdeploy-io/edge-sdk";
  * import { streamText } from "ai";
  *
  * const model = useGateway();

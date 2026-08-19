@@ -6,7 +6,7 @@
  *
  * @example
  * ```tsx
- * import { WidgetShell } from "@agentdeploy/edge-ui/widget";
+ * import { WidgetShell } from "@agentdeploy-io/edge-ui/widget";
  *
  * <WidgetShell agent="support" title="Help" />
  * ```

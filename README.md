@@ -11,7 +11,7 @@ for buyers.
 
 ```bash
 # 1. Scaffold an agent with chat UI included
-npx @agentdeploy/cli init --template chat-agent my-agent
+npx @agentdeploy-io/cli init --template chat-agent my-agent
 cd my-agent
 npm install
 
@@ -20,7 +20,7 @@ npm run dev
 # → http://localhost:8787/ui
 
 # 3. Deploy to the edge
-npx @agentdeploy/cli deploy
+npx @agentdeploy-io/cli deploy
 ```
 
 Your agent is a single Cloudflare Worker: Durable Object state, WebSocket
@@ -31,11 +31,11 @@ separate frontend to host.
 
 | Package | What it's for |
 |---------|---------------|
-| [`@agentdeploy/agents`](./agents) | The core SDK — a fork (facade) of Cloudflare's Agents SDK, decoupled from upstream release cycles. Adds `useAgentStatus` and the `uiAssets()` Vite plugin. |
-| [`@agentdeploy/sdk`](./sdk) | Deploying and invoking agents on the AgentDeploy Edge. |
-| [`@agentdeploy/edge-sdk`](./edge-sdk) | Billing, telemetry, and gateway integration — report usage from your agent to the marketplace. |
-| [`@agentdeploy/edge-ui`](./edge-ui) | Drop-in UI shells for your agent: chat, dashboard, widget, split. Themeable. |
-| `@agentdeploy/cli` | `ad init`, `ad dev`, `ad login`, `ad deploy` — the full seller workflow. |
+| [`@agentdeploy-io/agents`](./agents) | The core SDK — a fork (facade) of Cloudflare's Agents SDK, decoupled from upstream release cycles. Adds `useAgentStatus` and the `uiAssets()` Vite plugin. |
+| [`@agentdeploy-io/sdk`](./sdk) | Deploying and invoking agents on the AgentDeploy Edge. |
+| [`@agentdeploy-io/edge-sdk`](./edge-sdk) | Billing, telemetry, and gateway integration — report usage from your agent to the marketplace. |
+| [`@agentdeploy-io/edge-ui`](./edge-ui) | Drop-in UI shells for your agent: chat, dashboard, widget, split. Themeable. |
+| `@agentdeploy-io/cli` | `ad init`, `ad dev`, `ad login`, `ad deploy` — the full seller workflow. |
 
 ## Architecture: One Worker, Agent + UI
 
@@ -50,7 +50,7 @@ separate frontend to host.
 │  │   chat)     │      │                    │ │
 │  └────────────┘      └────────────────────┘ │
 │                                              │
-│  @agentdeploy/edge-sdk → usage/billing       │
+│  @agentdeploy-io/edge-sdk → usage/billing       │
 └─────────────────────────────────────────────┘
 ```
 
@@ -62,7 +62,7 @@ provisions and hosts it. Buyers get their own management console
 
 ## Why a fork of the Agents SDK?
 
-`@agentdeploy/agents` re-exports everything from Cloudflare's excellent
+`@agentdeploy-io/agents` re-exports everything from Cloudflare's excellent
 [`agents`](https://github.com/cloudflare/agents) package, so your existing
 knowledge (and most code) transfers directly. The facade means:
 

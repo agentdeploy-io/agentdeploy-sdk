@@ -10,7 +10,7 @@
  *
  * @example
  * ```tsx
- * import { ChatShell } from "@agentdeploy/edge-ui/chat";
+ * import { ChatShell } from "@agentdeploy-io/edge-ui/chat";
  *
  * <ChatShell
  *   agent="ChatAgent"
@@ -21,7 +21,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { useAgent } from "@agentdeploy/agents/react";
+import { useAgent } from "@agentdeploy-io/agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { UIMessage } from "ai";
 import type { UITheme } from "../../theme.js";

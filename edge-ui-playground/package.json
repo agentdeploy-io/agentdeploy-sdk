@@ -1,5 +1,5 @@
 {
-  "name": "@agentdeploy/edge-ui-playground",
+  "name": "@agentdeploy-io/edge-ui-playground",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -13,7 +13,7 @@
     "deploy:pages": "npm run build && npx wrangler pages deploy dist"
   },
   "dependencies": {
-    "@agentdeploy/agents": "file:../agents",
+    "@agentdeploy-io/agents": "^0.1.0",
     "agents": "^0.18.0",
     "partysocket": "1.3.0",
     "react": "^19.0.0",

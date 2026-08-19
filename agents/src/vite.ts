@@ -1,5 +1,5 @@
 /**
- * @agentdeploy/agents/vite — Vite plugin for AgentDeploy projects
+ * @agentdeploy-io/agents/vite — Vite plugin for AgentDeploy projects
  *
  * Wraps the upstream Cloudflare Agents Vite plugin, which handles:
  *   - TC39 decorator transforms (for @callable())
@@ -55,7 +55,7 @@ export interface UIAssetsOptions {
  * ```ts
  * // vite.config.ts
  * import { defineConfig } from "vite";
- * import { agents, uiAssets } from "@agentdeploy/agents/vite";
+ * import { agents, uiAssets } from "@agentdeploy-io/agents/vite";
  *
  * export default defineConfig({
  *   plugins: [
@@ -130,7 +130,7 @@ export function uiAssets(options: UIAssetsOptions = {}): Plugin {
  * @example
  * ```ts
  * import { defineConfig } from "vite";
- * import { agentDeploy } from "@agentdeploy/agents/vite";
+ * import { agentDeploy } from "@agentdeploy-io/agents/vite";
  *
  * export default defineConfig({
  *   plugins: [agentDeploy({ ui: { uiDir: "./ui" } })],

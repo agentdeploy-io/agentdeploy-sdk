@@ -1,5 +1,5 @@
 {
-  "name": "@agentdeploy/agents",
+  "name": "@agentdeploy-io/agents",
   "version": "0.1.0",
   "description": "AgentDeploy fork of Cloudflare Agents SDK - decoupled from upstream release cycles with added UI shell support",
   "type": "module",

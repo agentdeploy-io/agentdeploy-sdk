@@ -11,14 +11,14 @@
  *
  * @example
  * ```tsx
- * import { DashboardShell } from "@agentdeploy/edge-ui/dashboard";
+ * import { DashboardShell } from "@agentdeploy-io/edge-ui/dashboard";
  *
  * <DashboardShell agent="monitor" title="System Monitor" host="localhost:8787" />
  * ```
  */
 
 import React, { useState, useCallback } from "react";
-import { useAgent } from "@agentdeploy/agents/react";
+import { useAgent } from "@agentdeploy-io/agents/react";
 import type { UITheme } from "../../theme.js";
 import { themeToCSSVars, DEFAULT_LIGHT_THEME } from "../../theme.js";
 

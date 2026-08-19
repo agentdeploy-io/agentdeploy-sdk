@@ -12,8 +12,8 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "paths": {
-      "@agentdeploy/edge-ui/*": ["../edge-ui/src/*"],
-      "@agentdeploy/edge-ui": ["../edge-ui/src/index.ts"]
+      "@agentdeploy-io/edge-ui/*": ["../edge-ui/src/*"],
+      "@agentdeploy-io/edge-ui": ["../edge-ui/src/index.ts"]
     }
   },
   "include": ["src"]

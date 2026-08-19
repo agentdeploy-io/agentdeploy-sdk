@@ -9,12 +9,12 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@agentdeploy/edge-ui": resolve(__dirname, "../edge-ui/src/index.ts"),
-      "@agentdeploy/edge-ui/chat": resolve(__dirname, "../edge-ui/src/shells/chat/index.ts"),
-      "@agentdeploy/edge-ui/widget": resolve(__dirname, "../edge-ui/src/shells/widget/index.ts"),
-      "@agentdeploy/edge-ui/dashboard": resolve(__dirname, "../edge-ui/src/shells/dashboard/index.ts"),
-      "@agentdeploy/edge-ui/split": resolve(__dirname, "../edge-ui/src/shells/split/index.ts"),
-      "@agentdeploy/edge-ui/theme": resolve(__dirname, "../edge-ui/src/theme.ts"),
+      "@agentdeploy-io/edge-ui": resolve(__dirname, "../edge-ui/src/index.ts"),
+      "@agentdeploy-io/edge-ui/chat": resolve(__dirname, "../edge-ui/src/shells/chat/index.ts"),
+      "@agentdeploy-io/edge-ui/widget": resolve(__dirname, "../edge-ui/src/shells/widget/index.ts"),
+      "@agentdeploy-io/edge-ui/dashboard": resolve(__dirname, "../edge-ui/src/shells/dashboard/index.ts"),
+      "@agentdeploy-io/edge-ui/split": resolve(__dirname, "../edge-ui/src/shells/split/index.ts"),
+      "@agentdeploy-io/edge-ui/theme": resolve(__dirname, "../edge-ui/src/theme.ts"),
     },
   },
   server: {

@@ -86,7 +86,7 @@ export async function bundleAgent(opts: BundleOptions): Promise<BundleResult> {
     mainFields: ["module", "main"],
     banner: {
       js: [
-        "// ── AgentDeploy Edge Agent — Auto-bundled by @agentdeploy/cli ──",
+        "// ── AgentDeploy Edge Agent — Auto-bundled by @agentdeploy-io/cli ──",
         "// This module was bundled from TypeScript using esbuild.",
         "// Platform ambient constants (AD_*) are injected at deploy time.",
         "",

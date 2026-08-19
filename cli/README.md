@@ -1,17 +1,17 @@
-# @agentdeploy/cli
+# @agentdeploy-io/cli
 
 CLI for building and deploying edge AI agents on [AgentDeploy](https://agentdeploy.io).
 
 ## Install
 
 ```bash
-npm install -g @agentdeploy/cli
+npm install -g @agentdeploy-io/cli
 ```
 
 Or use via npx without installing:
 
 ```bash
-npx @agentdeploy/cli <command>
+npx @agentdeploy-io/cli <command>
 ```
 
 ## Quick Start

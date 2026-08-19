@@ -96,7 +96,7 @@ function sharedPackageJson(projectName: string): string {
     "deploy": "ad deploy"
   },
   "dependencies": {
-    "@agentdeploy/edge-sdk": "^0.1.0",
+    "@agentdeploy-io/edge-sdk": "^0.1.0",
     "agents": "^0.18.0",
     "@cloudflare/ai-chat": "^0.9.0",
     "ai": "^6.0.0",
@@ -147,7 +147,7 @@ export const chatAgentTemplate: ProjectTemplate = {
     },
     {
       path: "src/server.ts",
-      content: `import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+      content: `import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const MyAgent = createChatAgent({
   name: "{{AGENT_NAME}}",
@@ -161,7 +161,7 @@ export default createHandler(MyAgent);
     },
     {
       path: "src/tools.ts",
-      content: `import { defineTool } from "@agentdeploy/edge-sdk";
+      content: `import { defineTool } from "@agentdeploy-io/edge-sdk";
 import { z } from "zod";
 
 /**
@@ -182,7 +182,7 @@ export const exampleTool = defineTool({
       path: "README.md",
       content: `# {{PROJECT_NAME}}
 
-An AI chat agent built with [@agentdeploy/edge-sdk](https://www.npmjs.com/package/@agentdeploy/edge-sdk).
+An AI chat agent built with [@agentdeploy-io/edge-sdk](https://www.npmjs.com/package/@agentdeploy-io/edge-sdk).
 
 ## Quick Start
 
@@ -250,7 +250,7 @@ export const scheduledAgentTemplate: ProjectTemplate = {
     },
     {
       path: "src/server.ts",
-      content: `import { createAgent, createHandler } from "@agentdeploy/edge-sdk";
+      content: `import { createAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const ScheduledAgent = createAgent({
   name: "{{AGENT_NAME}}",
@@ -314,7 +314,7 @@ export default createHandler(ScheduledAgent);
       path: "README.md",
       content: `# {{PROJECT_NAME}}
 
-A scheduled agent built with [@agentdeploy/edge-sdk](https://www.npmjs.com/package/@agentdeploy/edge-sdk).
+A scheduled agent built with [@agentdeploy-io/edge-sdk](https://www.npmjs.com/package/@agentdeploy-io/edge-sdk).
 
 ## Features
 
@@ -373,7 +373,7 @@ export const blankTemplate: ProjectTemplate = {
     },
     {
       path: "src/server.ts",
-      content: `import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+      content: `import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 // Replace this with your agent logic
 export const Agent = createChatAgent({
@@ -413,7 +413,7 @@ function uiMainTsx(agentName: string, shellType: string): string {
   if (shellType === "chat") {
     return `import React from "react";
 import { createRoot } from "react-dom/client";
-import { ChatShell } from "@agentdeploy/edge-ui";
+import { ChatShell } from "@agentdeploy-io/edge-ui";
 
 const root = createRoot(document.getElementById("app")!);
 root.render(
@@ -431,7 +431,7 @@ root.render(
   if (shellType === "widget") {
     return `import React from "react";
 import { createRoot } from "react-dom/client";
-import { WidgetShell } from "@agentdeploy/edge-ui";
+import { WidgetShell } from "@agentdeploy-io/edge-ui";
 
 const root = createRoot(document.getElementById("app")!);
 root.render(
@@ -448,7 +448,7 @@ root.render(
   if (shellType === "dashboard") {
     return `import React from "react";
 import { createRoot } from "react-dom/client";
-import { DashboardShell } from "@agentdeploy/edge-ui";
+import { DashboardShell } from "@agentdeploy-io/edge-ui";
 
 const root = createRoot(document.getElementById("app")!);
 root.render(
@@ -466,7 +466,7 @@ root.render(
   // split
   return `import React from "react";
 import { createRoot } from "react-dom/client";
-import { SplitShell } from "@agentdeploy/edge-ui";
+import { SplitShell } from "@agentdeploy-io/edge-ui";
 
 const root = createRoot(document.getElementById("app")!);
 root.render(
@@ -531,9 +531,9 @@ export const chatAgentWithUITemplate: ProjectTemplate = {
     "deploy": "npm run build:ui && ad deploy"
   },
   "dependencies": {
-    "@agentdeploy/edge-sdk": "^0.1.0",
-    "@agentdeploy/agents": "^0.1.0",
-    "@agentdeploy/edge-ui": "^0.1.0",
+    "@agentdeploy-io/edge-sdk": "^0.1.0",
+    "@agentdeploy-io/agents": "^0.1.0",
+    "@agentdeploy-io/edge-ui": "^0.1.0",
     "agents": "^0.18.0",
     "@cloudflare/ai-chat": "^0.9.0",
     "ai": "^6.0.0",
@@ -622,8 +622,8 @@ export const chatAgentWithUITemplate: ProjectTemplate = {
     },
     {
       path: "src/server.ts",
-      content: `import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
-import { createUIHandler, isUIPath } from "@agentdeploy/edge-ui/runtime";
+      content: `import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
+import { createUIHandler, isUIPath } from "@agentdeploy-io/edge-ui/runtime";
 
 export const MyAgent = createChatAgent({
   name: "{{AGENT_NAME}}",
@@ -652,7 +652,7 @@ export default {
     },
     {
       path: "src/tools.ts",
-      content: `import { defineTool } from "@agentdeploy/edge-sdk";
+      content: `import { defineTool } from "@agentdeploy-io/edge-sdk";
 import { z } from "zod";
 
 export const exampleTool = defineTool({
@@ -672,7 +672,7 @@ export const exampleTool = defineTool({
       path: "README.md",
       content: `# {{PROJECT_NAME}}
 
-An AI chat agent with bundled UI, built with [@agentdeploy/edge-sdk](https://www.npmjs.com/package/@agentdeploy/edge-sdk).
+An AI chat agent with bundled UI, built with [@agentdeploy-io/edge-sdk](https://www.npmjs.com/package/@agentdeploy-io/edge-sdk).
 
 ## Quick Start
 
@@ -695,7 +695,7 @@ npm run deploy
 
 - \`src/server.ts\` — Agent logic (Cloudflare Worker + Durable Object)
 - \`ui/\` — React UI shell (served at /ui/* in production)
-- The UI connects to the agent via WebSocket using \`useAgent\` from \`@agentdeploy/agents/react\`
+- The UI connects to the agent via WebSocket using \`useAgent\` from \`@agentdeploy-io/agents/react\`
 
 ## Customize the UI
 
@@ -728,7 +728,7 @@ export function getTemplate(name: string): ProjectTemplate {
 // ── Template for generate:tool ───────────────────────────────────────────────
 
 export function toolTemplate(toolName: string, pascalName: string): string {
-  return `import { defineTool } from "@agentdeploy/edge-sdk";
+  return `import { defineTool } from "@agentdeploy-io/edge-sdk";
 import { z } from "zod";
 
 export const ${toolName} = defineTool({
@@ -755,7 +755,7 @@ export const ${toolName} = defineTool({
 // ── Template for generate:agent ──────────────────────────────────────────────
 
 export function agentTemplate(agentName: string, pascalName: string): string {
-  return `import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+  return `import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
 export const ${pascalName} = createChatAgent({
   name: "${agentName}",

@@ -1,5 +1,5 @@
 /**
- * @agentdeploy/agents — Fork of Cloudflare Agents SDK
+ * @agentdeploy-io/agents — Fork of Cloudflare Agents SDK
  *
  * This package wraps the upstream `agents` npm package, providing:
  *   - Full backward compatibility with all upstream exports
@@ -9,7 +9,7 @@
  *   - Extended Vite plugin with UI asset handling
  *
  * Everything exported from the upstream `agents` package is re-exported
- * here, so `import { Agent } from "@agentdeploy/agents"` is equivalent
+ * here, so `import { Agent } from "@agentdeploy-io/agents"` is equivalent
  * to `import { Agent } from "agents"`.
  *
  * If Cloudflare sunsets or breaks the upstream package, we swap the
@@ -61,7 +61,7 @@ export type {
 
 export const FORK_VERSION = "0.1.0";
 export const UPSTREAM_VERSION = "0.18.0";
-export const FORK_NAME = "@agentdeploy/agents";
+export const FORK_NAME = "@agentdeploy-io/agents";
 
 /**
  * Returns fork metadata for diagnostics.

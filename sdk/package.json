@@ -1,5 +1,5 @@
 {
-  "name": "@agentdeploy/sdk",
+  "name": "@agentdeploy-io/sdk",
   "version": "0.1.0",
   "description": "Whitelabelled SDK for deploying and invoking AI agents on AgentDeploy Edge.",
   "license": "MIT",

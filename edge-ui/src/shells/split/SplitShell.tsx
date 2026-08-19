@@ -5,7 +5,7 @@
  *
  * @example
  * ```tsx
- * import { SplitShell } from "@agentdeploy/edge-ui/split";
+ * import { SplitShell } from "@agentdeploy-io/edge-ui/split";
  *
  * <SplitShell agent="support" title="Support Console" />
  * ```

@@ -1,5 +1,5 @@
 /**
- * @agentdeploy/agents/react — React bindings for AgentDeploy Agents
+ * @agentdeploy-io/agents/react — React bindings for AgentDeploy Agents
  *
  * Re-exports the upstream `useAgent` and `useAgentToolEvents` hooks
  * from the Cloudflare Agents SDK.
@@ -44,7 +44,7 @@ export interface UseAgentStatusResult {
  *
  * @example
  * ```tsx
- * import { useAgentStatus } from "@agentdeploy/agents/react";
+ * import { useAgentStatus } from "@agentdeploy-io/agents/react";
  *
  * function ChatUI() {
  *   const [{ status, connected, error }, agent] = useAgentStatus({

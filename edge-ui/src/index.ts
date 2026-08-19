@@ -1,5 +1,5 @@
 /**
- * @agentdeploy/edge-ui — Pre-built UI shells for AgentDeploy edge agents
+ * @agentdeploy-io/edge-ui — Pre-built UI shells for AgentDeploy edge agents
  *
  * This package provides React components that sellers can bundle with
  * their agent templates to ship a complete UI alongside their agent.
@@ -12,7 +12,7 @@
  *
  * @example
  * ```tsx
- * import { ChatShell } from "@agentdeploy/edge-ui";
+ * import { ChatShell } from "@agentdeploy-io/edge-ui";
  *
  * export default function App() {
  *   return <ChatShell agent="support" title="Customer Support" />;

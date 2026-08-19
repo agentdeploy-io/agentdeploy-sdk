@@ -1,7 +1,7 @@
 // ── Handler Factory ─────────────────────────────────────────────────────────
 // Creates the default export handler that routes to agents.
 
-import { routeAgentRequest } from "@agentdeploy/agents";
+import { routeAgentRequest } from "@agentdeploy-io/agents";
 import type { AgentHandler, AgentDeployAgent } from "./types.js";
 
 /**
@@ -68,7 +68,7 @@ function withCors(response: Response): Response {
  *
  * @example
  * ```ts
- * import { createChatAgent, createHandler } from "@agentdeploy/edge-sdk";
+ * import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
  *
  * export const Support = createChatAgent({ name: "support", ... });
  * export const Sales = createChatAgent({ name: "sales", ... });

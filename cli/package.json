@@ -1,5 +1,5 @@
 {
-  "name": "@agentdeploy/cli",
+  "name": "@agentdeploy-io/cli",
   "version": "0.1.0",
   "description": "CLI for building and deploying edge agents on AgentDeploy.",
   "license": "MIT",

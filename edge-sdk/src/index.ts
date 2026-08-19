@@ -1,4 +1,4 @@
-// ── @agentdeploy/edge-sdk ───────────────────────────────────────────────────
+// ── @agentdeploy-io/edge-sdk ───────────────────────────────────────────────────
 // Build AI agents on Cloudflare's edge with AgentDeploy billing, telemetry,
 // and gateway integration.
 //

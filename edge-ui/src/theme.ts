@@ -1,5 +1,5 @@
 /**
- * @agentdeploy/edge-ui/theme — Theme system for UI shells
+ * @agentdeploy-io/edge-ui/theme — Theme system for UI shells
  *
  * Provides a simple CSS variable-based theming system that sellers
  * can customize per-deployment. Themes are applied as CSS custom

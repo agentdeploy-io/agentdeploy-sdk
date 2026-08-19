@@ -71,7 +71,7 @@ function reportTrackedUsage(
  *
  * @example
  * ```ts
- * import { createChatAgent, createHandler, defineTool } from "@agentdeploy/edge-sdk";
+ * import { createChatAgent, createHandler, defineTool } from "@agentdeploy-io/edge-sdk";
  * import { z } from "zod";
  *
  * const getTime = defineTool({

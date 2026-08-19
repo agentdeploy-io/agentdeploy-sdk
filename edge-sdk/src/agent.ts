@@ -2,7 +2,7 @@
 // createAgent() produces a Durable Object class that wraps the Cloudflare
 // Agents SDK Agent class with AgentDeploy billing, telemetry, and gateway hooks.
 
-import { Agent } from "@agentdeploy/agents";
+import { Agent } from "@agentdeploy-io/agents";
 import type {
   AgentConfig,
   AgentContext,
@@ -26,7 +26,7 @@ import { recordTelemetry, reportUsage } from "./internal/telemetry.js";
  *
  * @example
  * ```ts
- * import { createAgent, createHandler } from "@agentdeploy/edge-sdk";
+ * import { createAgent, createHandler } from "@agentdeploy-io/edge-sdk";
  *
  * export const Monitor = createAgent({
  *   name: "monitor",

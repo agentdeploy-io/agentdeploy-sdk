@@ -15,7 +15,7 @@ import { recordTelemetry } from "./internal/telemetry.js";
  *
  * @example
  * ```ts
- * import { defineTool } from "@agentdeploy/edge-sdk";
+ * import { defineTool } from "@agentdeploy-io/edge-sdk";
  * import { z } from "zod";
  *
  * const checkInventory = defineTool({
