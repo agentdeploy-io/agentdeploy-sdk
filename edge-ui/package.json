@@ -1,0 +1,54 @@
+{
+  "name": "@agentdeploy/edge-ui",
+  "version": "0.1.0",
+  "description": "Pre-built UI shells for AgentDeploy edge agents — bundle chat, dashboard, and widget UIs with your agent templates",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./chat": {
+      "types": "./src/shells/chat/index.ts",
+      "import": "./src/shells/chat/index.ts"
+    },
+    "./dashboard": {
+      "types": "./src/shells/dashboard/index.ts",
+      "import": "./src/shells/dashboard/index.ts"
+    },
+    "./widget": {
+      "types": "./src/shells/widget/index.ts",
+      "import": "./src/shells/widget/index.ts"
+    },
+    "./split": {
+      "types": "./src/shells/split/index.ts",
+      "import": "./src/shells/split/index.ts"
+    },
+    "./theme": {
+      "types": "./src/theme.ts",
+      "import": "./src/theme.ts"
+    },
+    "./runtime": {
+      "types": "./src/runtime.ts",
+      "import": "./src/runtime.ts"
+    }
+  },
+  "dependencies": {
+    "@agentdeploy/agents": "file:../agents",
+    "@ai-sdk/react": "^4.0.40",
+    "@cloudflare/ai-chat": "^0.10.0",
+    "agents": "^0.19.0",
+    "ai": "^6.0.235",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

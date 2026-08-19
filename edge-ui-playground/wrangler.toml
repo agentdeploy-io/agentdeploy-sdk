@@ -1,0 +1,38 @@
+# ──────────────────────────────────────────────────────────────────
+# AgentDeploy Edge Console — Cloudflare Pages Configuration
+# ──────────────────────────────────────────────────────────────────
+#
+# This deploys the SPA to Cloudflare Pages with a Worker function
+# (_worker.js) that proxies agent requests and handles SPA routing.
+#
+# Usage:
+#   npx wrangler pages deploy dist --project-name=acme-edge-console
+#
+# The marketplace automation runs this after a buyer's purchase.
+# See DEPLOY.md for the full one-click deploy flow.
+
+name = "edge-console"
+compatibility_date = "2024-12-01"
+pages_build_output_dir = "dist"
+
+# ─── Environment Variables ────────────────────────────────────────
+# These are set per-deployment. The marketplace automation overrides
+# them when deploying for a specific buyer.
+#
+# DO NOT put secrets here — use `wrangler pages secret put` for those.
+
+[vars]
+MARKETPLACE_URL = "https://agentdeploy.io"
+DEPLOYMENT_API_URL = "https://api.agentdeploy.io"
+
+# AGENT_BACKEND_URL is set per-buyer in the Cloudflare dashboard.
+# Example: https://acme-agents.workers.dev
+# This is the URL of the buyer's deployed agent Worker.
+
+# ─── Build Configuration ──────────────────────────────────────────
+# The build command and directory are used by `wrangler pages deploy`
+# when building from source.
+
+[build]
+command = "npm run build"
+cwd = "."

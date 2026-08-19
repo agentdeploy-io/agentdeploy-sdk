@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+*.dev.vars
+
+# Wrangler / Cloudflare local state
+.wrangler/
+.dev-logs/
+
+# Design files (large binaries)
+*.pen
+
+# TypeScript
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Testing artifacts
+playwright-report/
+.test-results/
+coverage/
+
+# Claude local settings
+.claude/
