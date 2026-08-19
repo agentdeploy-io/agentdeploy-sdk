@@ -334,7 +334,7 @@ export async function getRequiredSecrets(
   }
 
   const data = res.data as { data?: { secrets: Array<{ key: string; required: boolean; description?: string }> } };
-  return data.data || (res.data as { secrets: Array<{ key: string; required: boolean; description?: string }> });
+  return data.data || (res.data as unknown as { secrets: Array<{ key: string; required: boolean; description?: string }> });
 }
 
 // ── Agent Registry ───────────────────────────────────────────────────────────

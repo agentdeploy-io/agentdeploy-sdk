@@ -36,7 +36,7 @@ const WORKERS_EXTERNAL = [
   "cloudflare:api_compatibility",
 ];
 
-const PLATFORM_EXTERNAL = [
+const PLATFORM_EXTERNAL: string[] = [
   // These are injected by the AgentDeploy platform renderer as ambient globals
   // (AD_DEPLOYMENT_ID, AD_GATEWAY_BASE_URL, etc.)
 ];

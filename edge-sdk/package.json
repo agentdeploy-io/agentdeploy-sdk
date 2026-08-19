@@ -14,13 +14,12 @@
     }
   },
   "files": [
-    "dist",
+    "src",
     "README.md"
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=18"
