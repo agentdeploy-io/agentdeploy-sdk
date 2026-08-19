@@ -31,9 +31,20 @@ export interface BundleOptions {
 // Packages that should NOT be bundled — they're either provided by the Workers
 // runtime or injected by the platform at deploy time.
 const WORKERS_EXTERNAL = [
-  "cloudflare:workers",
-  "cloudflare:sockets",
-  "cloudflare:api_compatibility",
+  "cloudflare:*", // all CF runtime modules (workers, sockets, email, etc.)
+  "node:*", // provided by nodejs_compat at runtime
+  "path",
+  "os",
+  "util",
+  "events",
+  "stream",
+  "crypto",
+  "buffer",
+  "url",
+  "http",
+  "https",
+  "assert",
+  "zlib",
 ];
 
 const PLATFORM_EXTERNAL: string[] = [
