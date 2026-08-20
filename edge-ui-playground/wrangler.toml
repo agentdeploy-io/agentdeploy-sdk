@@ -28,11 +28,4 @@ DEPLOYMENT_API_URL = "https://api.agentdeploy.io"
 # AGENT_BACKEND_URL is set per-buyer in the Cloudflare dashboard.
 # Example: https://acme-agents.workers.dev
 # This is the URL of the buyer's deployed agent Worker.
-
-# ─── Build Configuration ──────────────────────────────────────────
-# The build command and directory are used by `wrangler pages deploy`
-# when building from source.
-
-[build]
-command = "npm run build"
-cwd = "."
+# (Set via `wrangler pages secret put AGENT_BACKEND_URL`.)

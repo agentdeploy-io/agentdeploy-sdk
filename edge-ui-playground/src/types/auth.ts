@@ -81,6 +81,22 @@ export interface PurchasedTemplate {
   deploymentStatus?: "active" | "suspended" | "pending" | "failed";
   /** Custom domain for this specific deployment (if Pro/Business) */
   customDomain?: string | null;
+  /** All agents in this deployment (multi-agent templates) */
+  agents?: PurchasedTemplateAgent[];
+}
+
+/** A single agent inside a purchased deployment (multi-agent templates). */
+export interface PurchasedTemplateAgent {
+  /** Human-readable agent name */
+  name: string;
+  /** Durable Object class name (e.g. "ChatAgent") */
+  className: string;
+  /** What this agent does */
+  description: string | null;
+  /** Same-origin WS path for this agent (/d/{deploymentId}/agents/{segment}/{instance}) */
+  wsPath: string;
+  /** Whether this is the deployment's entrypoint agent */
+  isEntrypoint: boolean;
 }
 
 /**

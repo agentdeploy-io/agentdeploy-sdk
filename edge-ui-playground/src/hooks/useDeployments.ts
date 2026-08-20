@@ -26,7 +26,7 @@ import { AUTH_DISABLED, DEPLOYMENT_API_URL } from "../constants/auth";
 import { authFetch } from "./useAuthFetch";
 import { errorHandler } from "../errors/errorHandler";
 import { ErrorCode } from "../constants/errors";
-import type { PurchasedTemplate } from "../types/auth";
+import type { PurchasedTemplate, PurchasedTemplateAgent } from "../types/auth";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -57,14 +57,18 @@ interface DeploymentsApiResponse {
  * in production all agents are served from the same origin (the Worker
  * routes by path). The `port` field is only used for the Vite dev proxy.
  */
-function templateToAgentEntry(t: PurchasedTemplate): AgentRegistryEntry {
+function templateToAgentEntry(
+  t: PurchasedTemplate,
+  agent?: PurchasedTemplateAgent,
+): AgentRegistryEntry {
   return {
-    id: t.id,
-    name: t.name,
-    description: t.description,
+    // Multi-agent deployments get one entry per agent, keyed by class name.
+    id: agent ? `${t.id}:${agent.className}` : t.id,
+    name: agent && t.agents && t.agents.length > 1 ? `${t.name} — ${agent.name}` : t.name,
+    description: agent?.description || t.description,
     icon: t.icon,
     kind: t.kind,
-    wsPath: t.wsPath,
+    wsPath: agent?.wsPath ?? t.wsPath,
     // In production, port is irrelevant — all requests are same-origin.
     // We set it to 0 to signal "not applicable" (the dev proxy won't be used).
     port: 0,
@@ -72,6 +76,18 @@ function templateToAgentEntry(t: PurchasedTemplate): AgentRegistryEntry {
     hasCron: t.hasCron,
     capabilities: t.capabilities,
   };
+}
+
+/**
+ * Expand a deployment into console entries: one per declared agent for
+ * multi-agent templates, one for single/legacy deployments (which always
+ * carry a synthetic one-entry agents list from the API).
+ */
+function templateToAgentEntries(t: PurchasedTemplate): AgentRegistryEntry[] {
+  if (t.agents && t.agents.length > 0) {
+    return t.agents.map((a) => templateToAgentEntry(t, a));
+  }
+  return [templateToAgentEntry(t)];
 }
 
 // ─── Hook ────────────────────────────────────────────────────────
@@ -138,7 +154,7 @@ export function useDeployments(): UseDeploymentsResult {
             !d.deploymentStatus || d.deploymentStatus === "active",
         );
 
-        const entries = activeDeployments.map(templateToAgentEntry);
+        const entries = activeDeployments.flatMap(templateToAgentEntries);
         setAgents(entries);
         setError(null);
       } catch (err) {

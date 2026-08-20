@@ -47,8 +47,18 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
 
+    // ── Per-deployment proxy ────────────────────────────────────
+    // Routes: /d/{deploymentId}/* → that deployment's agent Worker.
+    // The deploymentId → worker URL map is provided via the
+    // DEPLOYMENT_MAP binding (JSON), set at console deploy time.
+    // e.g. /d/9/agents/chatagent/default → <worker-9>/agents/chatagent/default
+    const perDeployment = pathname.match(/^\/d\/([^/]+)(?:\/(.*))?$/);
+    if (perDeployment) {
+      return proxyToDeployment(request, env, perDeployment[1], perDeployment[2] ?? "");
+    }
+
     // ── Agent WebSocket + HTTP proxy ────────────────────────────
-    // Routes: /agents/* → agent backend
+    // Routes: /agents/* → agent backend (legacy single-backend mode)
     if (pathname.startsWith("/agents/")) {
       return proxyToBackend(request, env);
     }
@@ -69,11 +79,72 @@ export default {
     // ── Static assets ───────────────────────────────────────────
     // Let Cloudflare Pages handle static file serving.
     // The [assetFallback] in the Pages config handles SPA routing.
-    return env.ASSETS.fetch(request);
+    if (env.ASSETS && typeof env.ASSETS.fetch === "function") {
+      return env.ASSETS.fetch(request);
+    }
+    // Workers API deploys without an ASSETS binding (assets served by the
+    // platform for non-run_worker_first routes) — nothing to do here.
+    return jsonError("Not found", 404);
   },
 };
 
 // ─── Proxy Helpers ───────────────────────────────────────────────
+
+/**
+ * Proxy a request to a specific deployment's agent Worker.
+ * Looks up the worker URL in env.DEPLOYMENT_MAP (JSON: id → base URL).
+ */
+async function proxyToDeployment(request, env, deploymentId, restPath) {
+  let map = {};
+  try {
+    map = JSON.parse(env.DEPLOYMENT_MAP || "{}");
+  } catch {
+    return jsonError("DEPLOYMENT_MAP is malformed JSON.", 500);
+  }
+  const target = map[deploymentId];
+  if (!target) {
+    return jsonError(`Unknown deployment: ${deploymentId}`, 404);
+  }
+
+  const url = new URL(request.url);
+  const targetUrl = new URL("/" + restPath, target);
+  targetUrl.search = url.search;
+
+  // Same-account worker→workers.dev fetches do NOT route through the target
+  // worker's run_worker_first rules (they land on its static assets → 404).
+  // The deployer adds a service binding per deployment (D_{id}) — prefer it.
+  const binding = env["D_" + deploymentId];
+  if (binding && typeof binding.fetch === "function") {
+    const init = {
+      method: request.method,
+      headers: new Headers(request.headers),
+      body: request.body,
+      redirect: "manual",
+    };
+    try {
+      return await binding.fetch(targetUrl.href, init);
+    } catch (err) {
+      // Service bindings always run the target worker's code (no assets
+      // fallback) — an unmatched route can throw inside the backend.
+      // Surface a clean error instead of a 1101.
+      return jsonError(
+        `Deployment ${deploymentId} request failed: ${err && err.message ? err.message : String(err)}`,
+        502,
+      );
+    }
+  }
+
+  // Fallback: plain fetch (cross-account / service binding missing).
+  const proxyRequest = new Request(targetUrl, {
+    method: request.method,
+    headers: new Headers(request.headers),
+    body: request.body,
+    redirect: "manual",
+  });
+
+  const res = await fetch(proxyRequest);
+  return res;
+}
 
 /**
  * Proxy a request to the agent backend.

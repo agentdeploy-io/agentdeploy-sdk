@@ -73,11 +73,38 @@ export const AUTH_DISABLED = computeAuthDisabled();
 export const BETTER_AUTH_COOKIE = "better-auth.session_token";
 
 /**
+ * Runtime configuration injected by the console deployer.
+ * The deployment-service writes /runtime-config.js into the console worker's
+ * static assets at deploy time (see src/services/edge-console.ts), so a single
+ * prebuilt dist works for any environment. Build-time VITE_* vars act as
+ * fallbacks for local dev.
+ */
+interface EdgeConsoleRuntimeConfig {
+  MARKETPLACE_URL?: string;
+  DEPLOYMENT_API_URL?: string;
+}
+
+declare global {
+  interface Window {
+    __EDGE_CONSOLE_CONFIG__?: EdgeConsoleRuntimeConfig;
+  }
+}
+
+function runtimeConfig(): EdgeConsoleRuntimeConfig {
+  if (typeof window !== "undefined" && window.__EDGE_CONSOLE_CONFIG__) {
+    return window.__EDGE_CONSOLE_CONFIG__;
+  }
+  return {};
+}
+
+/**
  * The main marketplace URL where users log in / create accounts.
  * Edge Console subdomains redirect here when auth is needed.
  */
 export const MARKETPLACE_URL =
-  import.meta.env.VITE_MARKETPLACE_URL ?? "https://agentdeploy.io";
+  runtimeConfig().MARKETPLACE_URL ??
+  (import.meta.env.VITE_MARKETPLACE_URL as string | undefined) ??
+  "https://agentdeploy.io";
 
 /**
  * The deployment-service API base URL.
@@ -88,7 +115,9 @@ export const MARKETPLACE_URL =
  * In local dev: http://localhost:8787 (or whichever agent port)
  */
 export const DEPLOYMENT_API_URL =
-  import.meta.env.VITE_DEPLOYMENT_API_URL ?? "";
+  runtimeConfig().DEPLOYMENT_API_URL ??
+  (import.meta.env.VITE_DEPLOYMENT_API_URL as string | undefined) ??
+  "";
 
 /**
  * The edge token exchange endpoint on the main marketplace.
