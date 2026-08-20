@@ -112,14 +112,9 @@ export function useDeployments(): UseDeploymentsResult {
       return;
     }
 
-    // No deployment API configured — can't fetch
-    if (!DEPLOYMENT_API_URL) {
-      setError(
-        "Deployment API URL is not configured. Set VITE_DEPLOYMENT_API_URL.",
-      );
-      setLoading(false);
-      return;
-    }
+    // Empty DEPLOYMENT_API_URL means same-origin: the console Worker
+    // proxies /v1/* to the marketplace BFF (avoids CORS entirely).
+    const apiBase = DEPLOYMENT_API_URL.replace(/\/+$/, "");
 
     let cancelled = false;
     setLoading(true);
@@ -127,7 +122,7 @@ export function useDeployments(): UseDeploymentsResult {
 
     const fetchDeployments = async () => {
       try {
-        const url = `${DEPLOYMENT_API_URL}/v1/deployments`;
+        const url = `${apiBase}/v1/deployments`;
         const response = await authFetch(url, {
           headers: { Accept: "application/json" },
           signal: AbortSignal.timeout(10000),

@@ -90,8 +90,9 @@ export default {
 
     // ── Marketplace API proxy (optional) ────────────────────────
     // Routes: /api/edge/* → marketplace API
-    // This avoids CORS for session checks on subdomains.
-    if (pathname.startsWith("/api/edge/")) {
+    //         /v1/*      → marketplace BFF (deployment-service proxy)
+    // This avoids CORS for session checks and deployments listing.
+    if (pathname.startsWith("/api/edge/") || pathname.startsWith("/v1/")) {
       return proxyToMarketplace(request, env);
     }
 
