@@ -27,11 +27,11 @@ import { Card, Badge, Button, StatusDot, Dropdown, Tooltip } from "../components
 import { EmptyState } from "../components/shared";
 import { COLORS, RADIUS } from "../constants/theme";
 import {
-  AGENTS,
   AGENT_STATUS_LABELS,
   AGENT_STATUS_BADGE_VARIANT,
 } from "../constants/agents";
 import { useAgentHealth } from "../hooks/useAgentHealth";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import type { AgentRegistryEntry } from "../constants/agents";
 
 // ─── Props ───────────────────────────────────────────────────────
@@ -130,6 +130,7 @@ const AgentCard: React.FC<{
 // ─── Main View ───────────────────────────────────────────────────
 
 export const AgentsView: React.FC<AgentsViewProps> = ({ onNavigateAgent }) => {
+  const { agents: AGENTS } = useAgentRegistry();
   const [searchQuery, setSearchQuery] = React.useState("");
   const [filterKind, setFilterKind] = React.useState<string>("all");
 

@@ -57,15 +57,34 @@ export default {
       return proxyToDeployment(request, env, perDeployment[1], perDeployment[2] ?? "");
     }
 
-    // ── Agent WebSocket + HTTP proxy ────────────────────────────
-    // Routes: /agents/* → agent backend (legacy single-backend mode)
-    if (pathname.startsWith("/agents/")) {
+    // ── Agent WebSocket + HTTP proxy (legacy single-backend mode) ─
+    // Routes: /agents/* → AGENT_BACKEND_URL. Only used when NO
+    // DEPLOYMENT_MAP is configured (legacy single-backend consoles).
+    // In production, /agents/{id}/{tab} is an SPA page route and agent
+    // traffic goes through /d/{deploymentId}/agents/... instead — so
+    // this proxy must NOT run when DEPLOYMENT_MAP is present.
+    const hasDeploymentMap = !!(
+      env.DEPLOYMENT_MAP && String(env.DEPLOYMENT_MAP).trim() !== "{}"
+    );
+    const isUpgrade =
+      (request.headers.get("upgrade") || "").toLowerCase() === "websocket";
+    const isNavigation = (request.headers.get("accept") || "").includes(
+      "text/html",
+    );
+    if (
+      pathname.startsWith("/agents/") &&
+      !hasDeploymentMap &&
+      (isUpgrade || !isNavigation)
+    ) {
       return proxyToBackend(request, env);
     }
 
-    // ── Health check proxy ──────────────────────────────────────
+    // ── Health check proxy (legacy single-backend mode) ──────────
     // Routes: /health, /health/{port} → agent backend /health
-    if (pathname === "/health" || pathname.startsWith("/health/")) {
+    if (
+      (pathname === "/health" || pathname.startsWith("/health/")) &&
+      !hasDeploymentMap
+    ) {
       return proxyToBackend(request, env, "/health");
     }
 
@@ -82,8 +101,24 @@ export default {
     if (env.ASSETS && typeof env.ASSETS.fetch === "function") {
       return env.ASSETS.fetch(request);
     }
-    // Workers API deploys without an ASSETS binding (assets served by the
-    // platform for non-run_worker_first routes) — nothing to do here.
+    // Workers API deploys without an ASSETS binding: assets are served by
+    // the platform for non-run_worker_first routes. For SPA navigations
+    // (Accept: text/html) that fell through the proxies above, serve the
+    // shell by subrequesting "/" — the platform serves index.html there
+    // while the browser URL keeps the deep-linked SPA route.
+    if ((request.headers.get("accept") || "").includes("text/html")) {
+      try {
+        const shell = await fetch(new URL("/", url), {
+          method: "GET",
+          headers: { Accept: "text/html" },
+        });
+        if (shell.ok && (shell.headers.get("content-type") || "").includes("text/html")) {
+          return shell;
+        }
+      } catch {
+        // fall through to 404
+      }
+    }
     return jsonError("Not found", 404);
   },
 };

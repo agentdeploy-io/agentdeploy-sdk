@@ -22,9 +22,10 @@ import React from "react";
 import { Card, MetricCard, Button, Badge, StatusDot, Table } from "../components/ui";
 import { LoadingState, EmptyState } from "../components/shared";
 import { COLORS, RADIUS } from "../constants/theme";
-import { AGENTS, AGENT_STATUS_LABELS, AGENT_STATUS_BADGE_VARIANT } from "../constants/agents";
+import { AGENT_STATUS_LABELS, AGENT_STATUS_BADGE_VARIANT } from "../constants/agents";
 import { useAgentHealth } from "../hooks/useAgentHealth";
 import { useAgentInfo } from "../hooks/useAgentInfo";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import type { AgentRegistryEntry } from "../constants/agents";
 import type { AgentConnectionStatus } from "../types/agent";
 import type { TableColumn } from "../types/ui";
@@ -110,6 +111,8 @@ const HealthReporter: React.FC<{
 // ─── Main View ───────────────────────────────────────────────────
 
 export const OverviewView: React.FC<OverviewViewProps> = ({ onNavigateAgents, onNavigateAgent }) => {
+  const { agents: AGENTS } = useAgentRegistry();
+
   // Map of agentId → { healthy, latencyMs }
   const [healthMap, setHealthMap] = React.useState<
     Record<string, { healthy: boolean; latencyMs: number | null }>

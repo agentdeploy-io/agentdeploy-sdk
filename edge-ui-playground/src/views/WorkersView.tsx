@@ -26,8 +26,8 @@ import React from "react";
 import { Card, Badge, Button, MetricCard, Table } from "../components/ui";
 import { EmptyState } from "../components/shared";
 import { COLORS, RADIUS, STATUS_COLORS } from "../constants/theme";
-import { AGENTS, getAgentById } from "../constants/agents";
 import { useAgentHealth } from "../hooks/useAgentHealth";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import { useAgentInfo } from "../hooks/useAgentInfo";
 import type { AgentRegistryEntry } from "../constants/agents";
 import type { AgentConnectionStatus } from "../types/agent";
@@ -81,6 +81,7 @@ const WorkerRowRenderer: React.FC<{
 // ─── Component ───────────────────────────────────────────────────
 
 export const WorkersView: React.FC<WorkersViewProps> = () => {
+  const { agents: AGENTS, getAgentById } = useAgentRegistry();
   const [workerRows, setWorkerRows] = React.useState<WorkerRow[]>([]);
 
   const handleReport = React.useCallback((row: WorkerRow) => {

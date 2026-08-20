@@ -22,8 +22,8 @@ import React from "react";
 import { Card, Badge, Button } from "../components/ui";
 import { EmptyState } from "../components/shared";
 import { COLORS } from "../constants/theme";
-import { AGENTS } from "../constants/agents";
 import { useAgentHealth } from "../hooks/useAgentHealth";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import type { AgentRegistryEntry } from "../constants/agents";
 
 // ─── Props ───────────────────────────────────────────────────────
@@ -92,6 +92,8 @@ const AgentConversationRow: React.FC<{
 // ─── Component ───────────────────────────────────────────────────
 
 export const ConversationsView: React.FC<ConversationsViewProps> = ({ onNavigateAgent }) => {
+  const { agents: AGENTS } = useAgentRegistry();
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }} className="fade-in">
       {/* ─── Header ───────────────────────────────────────────── */}

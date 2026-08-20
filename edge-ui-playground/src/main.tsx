@@ -33,6 +33,7 @@ Object.entries(CSS_VARS).forEach(([key, value]) => {
 // ─── Providers ───────────────────────────────────────────────────
 import { ToastProvider, registerToastPusher, useToast } from "./hooks/useToast";
 import { AuthProvider } from "./hooks/useAuth";
+import { AgentRegistryProvider } from "./hooks/useAgentRegistry";
 
 // ─── Router ──────────────────────────────────────────────────────
 import { useRouter, buildAgentRoute } from "./hooks/useRouter";
@@ -239,9 +240,11 @@ createRoot(container).render(
   <React.StrictMode>
     <AuthProvider>
       <ToastProvider>
-        <AuthGuard>
-          <App />
-        </AuthGuard>
+        <AgentRegistryProvider>
+          <AuthGuard>
+            <App />
+          </AuthGuard>
+        </AgentRegistryProvider>
       </ToastProvider>
     </AuthProvider>
   </React.StrictMode>,

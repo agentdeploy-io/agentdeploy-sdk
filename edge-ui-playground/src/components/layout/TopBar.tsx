@@ -19,8 +19,9 @@
 import React from "react";
 import { COLORS, LAYOUT, RADIUS } from "../../constants/theme";
 import { getNavItem, AGENT_TABS } from "../../constants/navigation";
-import { getAgentById } from "../../constants/agents";
+import { useAgentRegistry } from "../../hooks/useAgentRegistry";
 import { useAuth } from "../../hooks/useAuth";
+import type { AgentRegistryEntry } from "../../constants/agents";
 import type { RouteParams } from "../../types/ui";
 
 // ─── Props ───────────────────────────────────────────────────────
@@ -37,7 +38,10 @@ interface BreadcrumbItem {
   label: string;
 }
 
-function buildBreadcrumbs(route: RouteParams): BreadcrumbItem[] {
+function buildBreadcrumbs(
+  route: RouteParams,
+  getAgentById: (id: string) => AgentRegistryEntry | undefined,
+): BreadcrumbItem[] {
   switch (route.view) {
     case "overview":
       return [{ label: "Overview" }];
@@ -75,7 +79,8 @@ function buildBreadcrumbs(route: RouteParams): BreadcrumbItem[] {
 // ─── Component ───────────────────────────────────────────────────
 
 export const TopBar: React.FC<TopBarProps> = React.memo(({ route, actions }) => {
-  const breadcrumbs = buildBreadcrumbs(route);
+  const { getAgentById } = useAgentRegistry();
+  const breadcrumbs = buildBreadcrumbs(route, getAgentById);
 
   return (
     <header

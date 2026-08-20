@@ -18,8 +18,8 @@ import React from "react";
 import { Card, Badge, Button, MetricCard, Tabs } from "../components/ui";
 import { EmptyState } from "../components/shared";
 import { COLORS, RADIUS } from "../constants/theme";
-import { AGENTS, getAgentById } from "../constants/agents";
 import { useAgentHealth } from "../hooks/useAgentHealth";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import type { AgentRegistryEntry } from "../constants/agents";
 
 // ─── Props ───────────────────────────────────────────────────────
@@ -45,6 +45,7 @@ const HealthMetricReporter: React.FC<{
 // ─── Component ───────────────────────────────────────────────────
 
 export const ObservabilityView: React.FC<ObservabilityViewProps> = () => {
+  const { agents: AGENTS, getAgentById } = useAgentRegistry();
   const [tab, setTab] = React.useState("traces");
 
   // Aggregate health data from all agents
@@ -201,6 +202,8 @@ const ErrorsContent: React.FC<{
   errorAgents: number;
   healthMap: Record<string, { status: string; latencyMs: number | null }>;
 }> = ({ errorAgents, healthMap }) => {
+  const { getAgentById } = useAgentRegistry();
+
   if (errorAgents === 0) {
     return (
       <Card>
@@ -262,7 +265,10 @@ const ErrorsContent: React.FC<{
 
 const HealthContent: React.FC<{
   healthMap: Record<string, { status: string; latencyMs: number | null }>;
-}> = ({ healthMap }) => (
+}> = ({ healthMap }) => {
+  const { agents: AGENTS } = useAgentRegistry();
+
+  return (
   <Card padding="none">
     <div style={{ padding: "20px 20px 0" }}>
       <Card.Header
@@ -318,4 +324,5 @@ const HealthContent: React.FC<{
       })}
     </div>
   </Card>
-);
+  );
+};

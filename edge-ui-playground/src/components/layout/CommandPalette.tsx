@@ -20,7 +20,7 @@
 import React from "react";
 import { COLORS, RADIUS, Z_INDEX, TRANSITIONS } from "../../constants/theme";
 import { NAV_GROUPS } from "../../constants/navigation";
-import { AGENTS } from "../../constants/agents";
+import { useAgentRegistry } from "../../hooks/useAgentRegistry";
 import type { ViewId } from "../../types/ui";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -50,6 +50,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onNavigate,
   onToggleTheme,
 }) => {
+  const { agents: AGENTS } = useAgentRegistry();
   const [query, setQuery] = React.useState("");
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement>(null);

@@ -46,6 +46,10 @@ export function useAgentHealth(
   const checkHealth = useCallback(async () => {
     if (!agent || !isMountedRef.current) return;
 
+    // Production (same-origin Worker): no dev-proxy port to health-check.
+    // Connection status comes from the WebSocket itself, not HTTP polling.
+    if (agent.port === 0) return;
+
     // Don't poll if tab is hidden (save resources)
     if (document.hidden) return;
 

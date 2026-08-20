@@ -23,14 +23,15 @@ import { Card, Badge, Button, Tabs, StatusDot, MetricCard, CodeBlock } from "../
 import { LoadingState, EmptyState, ErrorBoundary } from "../components/shared";
 import { COLORS, RADIUS, STATUS_COLORS } from "../constants/theme";
 import {
-  getAgentById,
   AGENT_STATUS_LABELS,
   AGENT_STATUS_BADGE_VARIANT,
+  type AgentRegistryEntry,
 } from "../constants/agents";
 import { AGENT_TABS } from "../constants/navigation";
 import { useAgentConnection } from "../hooks/useAgentConnection";
 import { useAgentHealth } from "../hooks/useAgentHealth";
 import { useAgentInfo } from "../hooks/useAgentInfo";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import { AppErrors } from "../errors/AppError";
 import {
   TOAST_RECONNECT_EVENT,
@@ -55,6 +56,7 @@ export const AgentDetailView: React.FC<AgentDetailViewProps> = ({
   onNavigateTab,
   onNavigateBack,
 }) => {
+  const { getAgentById } = useAgentRegistry();
   const agent = getAgentById(agentId);
 
   // ─── Agent Not Found ──────────────────────────────────────────
@@ -111,7 +113,7 @@ export const AgentDetailView: React.FC<AgentDetailViewProps> = ({
 // ─── Header Sub-Component ────────────────────────────────────────
 
 const AgentDetailHeader: React.FC<{
-  agent: NonNullable<ReturnType<typeof getAgentById>>;
+  agent: AgentRegistryEntry;
   onBack: () => void;
 }> = ({ agent, onBack }) => {
   const { status } = useAgentHealth(agent);
@@ -191,7 +193,7 @@ const AgentDetailHeader: React.FC<{
 
 // ─── Chat Tab ────────────────────────────────────────────────────
 
-const AgentChatTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = ({
+const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
   agent,
 }) => {
   const { status, messages, sendMessage, reconnect, reconnectAttempts, lastError, lastToolCall } = useAgentConnection(agent);
@@ -673,7 +675,7 @@ const MessageBubble: React.FC<{ message: ChatMessage; showTimestamp?: boolean }>
 
 // ─── Monitor Tab ─────────────────────────────────────────────────
 
-const AgentMonitorTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = ({
+const AgentMonitorTab: React.FC<{ agent: AgentRegistryEntry }> = ({
   agent,
 }) => {
   const { status, latencyMs } = useAgentHealth(agent);
@@ -783,7 +785,7 @@ const AgentMonitorTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentB
 
 // ─── Config Tab ──────────────────────────────────────────────────
 
-const AgentConfigTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = ({
+const AgentConfigTab: React.FC<{ agent: AgentRegistryEntry }> = ({
   agent,
 }) => {
   const { info, loading, refetch } = useAgentInfo(agent);
@@ -867,7 +869,7 @@ const ConfigRow: React.FC<{ label: string; value: string }> = ({ label, value })
 
 // ─── Schedules Tab ───────────────────────────────────────────────
 
-const AgentSchedulesTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = ({
+const AgentSchedulesTab: React.FC<{ agent: AgentRegistryEntry }> = ({
   agent,
 }) => {
   if (!agent.hasCron) {
@@ -938,7 +940,7 @@ const AgentSchedulesTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgen
 
 // ─── Storage Tab ─────────────────────────────────────────────────
 
-const AgentStorageTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = () => (
+const AgentStorageTab: React.FC<{ agent: AgentRegistryEntry }> = () => (
   <Card>
     <Card.Header
       title="Storage"
@@ -955,7 +957,7 @@ const AgentStorageTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentB
 
 // ─── Logs Tab ────────────────────────────────────────────────────
 
-const AgentLogsTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = ({
+const AgentLogsTab: React.FC<{ agent: AgentRegistryEntry }> = ({
   agent,
 }) => (
   <Card>
@@ -973,7 +975,7 @@ const AgentLogsTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById
 
 // ─── Traces Tab ──────────────────────────────────────────────────
 
-const AgentTracesTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = () => (
+const AgentTracesTab: React.FC<{ agent: AgentRegistryEntry }> = () => (
   <Card>
     <Card.Header
       title="Traces"
@@ -989,7 +991,7 @@ const AgentTracesTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentBy
 
 // ─── Versions Tab ────────────────────────────────────────────────
 
-const AgentVersionsTab: React.FC<{ agent: NonNullable<ReturnType<typeof getAgentById>> }> = () => (
+const AgentVersionsTab: React.FC<{ agent: AgentRegistryEntry }> = () => (
   <Card>
     <Card.Header
       title="Version History"

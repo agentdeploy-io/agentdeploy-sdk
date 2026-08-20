@@ -28,8 +28,8 @@ import React from "react";
 import { Card, Badge, Button, Tabs, Textarea } from "../components/ui";
 import { EmptyState } from "../components/shared";
 import { COLORS, RADIUS } from "../constants/theme";
-import { AGENTS } from "../constants/agents";
 import { useAgentInfo } from "../hooks/useAgentInfo";
+import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import type { AgentRegistryEntry } from "../constants/agents";
 
 // ─── Props ───────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ const PromptsSection: React.FC = () => {
 // health data, not a hardcoded list.
 
 const ModelsSection: React.FC = () => {
-  const agents = AGENTS;
+  const { agents } = useAgentRegistry();
 
   return (
     <Card padding="none">
