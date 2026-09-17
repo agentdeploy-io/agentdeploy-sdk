@@ -59,7 +59,7 @@ export type {
 
 // ── Fork metadata ────────────────────────────────────────────────────────────
 
-export const FORK_VERSION = "0.1.0";
+export const FORK_VERSION = "0.2.0";
 export const UPSTREAM_VERSION = "0.18.0";
 export const FORK_NAME = "@agentdeploy-io/agents";
 
