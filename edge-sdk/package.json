@@ -1,6 +1,6 @@
 {
   "name": "@agentdeploy-io/edge-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Build AI agents on Cloudflare's edge with AgentDeploy billing, telemetry, and gateway integration.",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "tsc --noEmit"
   },
   "engines": {
     "node": ">=18"
