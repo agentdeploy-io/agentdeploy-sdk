@@ -4,12 +4,18 @@
 
 import { Agent } from "@agentdeploy-io/agents";
 import type {
+  RetryOptions,
+  Schedule,
+  ScheduleCriteria,
+} from "@agentdeploy-io/agents";
+import type {
   AgentConfig,
   AgentContext,
   AgentDeployAgent,
   AgentSchedule,
 } from "./types.js";
 import { recordTelemetry, reportUsage } from "./internal/telemetry.js";
+import { runtimeErrorFromStackText, runtimeErrorResponse } from "./runtime-error.js";
 
 /**
  * Creates a Durable Object class for a general-purpose agent.
@@ -50,7 +56,12 @@ export function createAgent<TState = Record<string, unknown>>(
   const agentConfig = config;
   const agentTools = config.tools ?? {};
 
-  class AgentDeployAgentImpl extends Agent<TState> implements AgentDeployAgent<TState> {
+  // NOTE: the `implements AgentDeployAgent<TState>` clause is intentionally
+  // omitted — the public interface keeps its convenience signatures (cron
+  // strings, `Promise<string>` schedule ids) while the class mirrors the
+  // upstream `Agent` base signatures so the overrides stay type-compatible.
+  // The factory's return cast below exposes the public interface to users.
+  class AgentDeployAgentImpl extends Agent<Record<string, unknown>, TState> {
     static agentName = agentConfig.name;
     static agentTools = agentTools;
     static agentMcpServers = agentConfig.mcpServers ?? [];
@@ -100,46 +111,107 @@ export function createAgent<TState = Record<string, unknown>>(
 
     // ── Scheduling Helpers ────────────────────────────────────────────────
 
-    async schedule(
-      when: string | Date,
-      name: string,
-      ...args: unknown[]
-    ): Promise<string> {
+    /**
+     * Schedule a task (one-shot Date/delay, or cron expression).
+     * Mirrors the upstream `Agent.schedule` signature so the override remains
+     * type-compatible with the base class.
+     */
+    async schedule<T = string>(
+      when: Date | string | number,
+      callback: keyof this & string,
+      payload?: T,
+      options?: { retry?: RetryOptions; idempotent?: boolean },
+    ): Promise<Schedule<T>> {
       // Delegate to the Agents SDK's scheduling
-      const id = await super.schedule(when, name, ...args);
-      recordTelemetry("schedule.create", { id, name, when: String(when) });
-      return id;
+      const schedule = await super.schedule(when, callback, payload, options);
+      recordTelemetry("schedule.create", {
+        id: schedule.id,
+        name: String(callback),
+        when: String(when),
+      });
+      return schedule;
     }
 
-    async scheduleEvery(
-      cron: string,
-      name: string,
-      ...args: unknown[]
-    ): Promise<string> {
-      const id = await super.scheduleEvery(cron, name, ...args);
-      recordTelemetry("schedule.recurring", { id, name, cron });
-      return id;
+    /**
+     * Schedule a recurring task at a fixed interval (seconds).
+     * Mirrors the upstream `Agent.scheduleEvery` signature. Note: upstream
+     * only accepts a numeric interval — cron expressions must go through
+     * `schedule(cron, ...)` instead.
+     */
+    async scheduleEvery<T = string>(
+      intervalSeconds: number,
+      callback: keyof this & string,
+      payload?: T,
+      options?: { retry?: RetryOptions; _idempotent?: boolean },
+    ): Promise<Schedule<T>> {
+      const schedule = await super.scheduleEvery(
+        intervalSeconds,
+        callback,
+        payload,
+        options,
+      );
+      recordTelemetry("schedule.recurring", {
+        id: schedule.id,
+        name: String(callback),
+        cron: String(intervalSeconds),
+      });
+      return schedule;
     }
 
-    getSchedules(): AgentSchedule[] {
-      const raw = super.getSchedules();
-      return raw.map((s: unknown) => {
-        const obj = s as Record<string, unknown>;
+    /**
+     * Get all scheduled tasks, mapped to the AgentDeploy `AgentSchedule`
+     * view exposed via the public `AgentDeployAgent` interface.
+     */
+    getSchedules<T = string>(criteria?: ScheduleCriteria): Schedule<T>[] {
+      const raw = super.getSchedules(criteria);
+      return raw.map((s) => {
+        const obj = s as unknown as Record<string, unknown>;
         return {
           schedule: String(obj.cron ?? obj.when ?? ""),
           name: String(obj.name ?? ""),
           description: obj.description ? String(obj.description) : undefined,
           createdAt: obj.createdAt ? String(obj.createdAt) : new Date().toISOString(),
         };
-      });
+      }) as unknown as Schedule<T>[];
     }
 
-    cancelSchedule(id: string): void {
-      super.cancelSchedule(id);
+    cancelSchedule(id: string): Promise<boolean> {
+      const result = super.cancelSchedule(id);
       recordTelemetry("schedule.cancel", { id });
+      return result;
     }
 
     // ── Lifecycle Hooks (delegate to user config) ────────────────────────
+
+    /**
+     * Durable-Object routes (/agents/:class/:instance/*) bypass the worker
+     * script's fetch handler entirely — CF dispatches straight to this DO's
+     * fetch. The base partyserver fetch swallows pipeline errors and
+     * responds with `new Response(err.stack, { status: 500 })`; convert
+     * that (and any genuinely thrown error) into structured, customer-safe
+     * JSON. The full error/stack is logged for developers.
+     */
+    async fetch(request: Request): Promise<Response> {
+      let response: Response;
+      try {
+        response = await super.fetch(request);
+      } catch (err) {
+        return runtimeErrorResponse(err, AD_DEPLOYMENT_ID);
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (response.status >= 500 && !contentType.includes("application/json")) {
+        const text = await response.text().catch(() => "");
+        if (text.trim().startsWith("{")) {
+          // Some other handler produced a JSON body — pass it through.
+          return new Response(text, {
+            status: response.status,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return runtimeErrorFromStackText(text, AD_DEPLOYMENT_ID, response.status);
+      }
+      return response;
+    }
 
     async onStart(): Promise<void> {
       recordTelemetry("agent.start", { name: agentConfig.name });

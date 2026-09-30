@@ -50,7 +50,7 @@ export function defineTool<TInput, TOutput>(def: {
         const validationResult = def.inputSchema.safeParse(rawInput);
         if (!validationResult.success) {
           const errorMsg = validationResult.error.issues
-            .map((i: { path: (string | number)[]; message: string }) => `${i.path.join(".")}: ${i.message}`)
+            .map((i) => `${i.path.map(String).join(".")}: ${i.message}`)
             .join("; ");
           recordTelemetry("tool.validation_error", { tool: toolName, error: errorMsg });
           throw new Error(`Tool input validation failed: ${errorMsg}`);

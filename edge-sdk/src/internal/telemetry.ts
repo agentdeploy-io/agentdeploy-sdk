@@ -44,20 +44,31 @@ export function reportUsage(usage: UsageReport): void {
   // Fire-and-forget telemetry — don't block on this
   if (typeof AD_GATEWAY_BASE_URL === "string" && AD_GATEWAY_BASE_URL) {
     try {
-      fetch(`${AD_GATEWAY_BASE_URL}/v1/telemetry/usage`, {
+      // `keepalive` is not in @cloudflare/workers-types' RequestInit but is
+      // harmless (and standard) in workerd — declare it via an intersection
+      // type so the literal still type-checks without changing the request.
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-AD-Deployment": AD_DEPLOYMENT_ID,
+      };
+      // The /v1/telemetry/* ingest routes sit behind the gateway API-key
+      // auth — the deployment key authenticates (X-AD-Deployment is
+      // routing/observability only, cross-checked server-side).
+      if (typeof AD_GATEWAY_API_KEY === "string" && AD_GATEWAY_API_KEY) {
+        headers.Authorization = `Bearer ${AD_GATEWAY_API_KEY}`;
+      }
+      const init: RequestInit & { keepalive?: boolean } = {
         method: "POST",
         keepalive: true,
-        headers: {
-          "Content-Type": "application/json",
-          "X-AD-Deployment": AD_DEPLOYMENT_ID,
-        },
+        headers,
         body: JSON.stringify({
           deploymentId: AD_DEPLOYMENT_ID,
           ...usage,
           timestamp: new Date().toISOString(),
           source: "sdk",
         }),
-      }).catch(() => {
+      };
+      fetch(`${AD_GATEWAY_BASE_URL}/v1/telemetry/usage`, init).catch(() => {
         // Silently swallow — telemetry is best-effort
       });
     } catch {
@@ -87,16 +98,22 @@ export function recordTelemetry(
   // Fire-and-forget — don't block on telemetry
   if (typeof AD_GATEWAY_BASE_URL === "string" && AD_GATEWAY_BASE_URL) {
     try {
-      // Use keepalive for fire-and-forget in Workers
-      fetch(`${AD_GATEWAY_BASE_URL}/v1/telemetry/events`, {
+      // Use keepalive for fire-and-forget in Workers (see note in reportUsage
+      // about the intersection type for `keepalive`)
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-AD-Deployment": AD_DEPLOYMENT_ID,
+      };
+      if (typeof AD_GATEWAY_API_KEY === "string" && AD_GATEWAY_API_KEY) {
+        headers.Authorization = `Bearer ${AD_GATEWAY_API_KEY}`;
+      }
+      const init: RequestInit & { keepalive?: boolean } = {
         method: "POST",
         keepalive: true,
-        headers: {
-          "Content-Type": "application/json",
-          "X-AD-Deployment": AD_DEPLOYMENT_ID,
-        },
+        headers,
         body: JSON.stringify(payload),
-      }).catch(() => {
+      };
+      fetch(`${AD_GATEWAY_BASE_URL}/v1/telemetry/events`, init).catch(() => {
         // Silently swallow telemetry errors
       });
     } catch {

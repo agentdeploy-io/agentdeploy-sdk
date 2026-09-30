@@ -143,7 +143,8 @@ export interface McpServerConfig {
   transport:
     | { type: "sse"; url: string; headers?: Record<string, string> }
     | { type: "stdio"; command: string; args?: string[] }
-    | { type: "ws"; url: string };
+    | { type: "ws"; url: string }
+    | { type: "streamable-http"; url: string; headers?: Record<string, string> };
   /** Optional name for the server */
   name?: string;
 }
@@ -197,11 +198,19 @@ export interface AgentDeployAgent<TState = Record<string, unknown>> {
   cancelSchedule(id: string): void;
 
   // ── MCP ──────────────────────────────────────────────────────────────────
-  /** MCP client for connecting to external tool servers */
+  /** MCP client for connecting to external tool servers (Agents SDK 0.20+) */
   mcp: {
-    connect(server: McpServerConfig): Promise<void>;
+    connect(
+      url: string,
+      options?: {
+        transport?: {
+          type?: "sse" | "streamable-http" | "rpc" | "auto";
+          headers?: Record<string, string>;
+        };
+      },
+    ): Promise<{ id: string; authUrl?: string; clientId?: string }>;
     getAITools(): Record<string, unknown>;
-    disconnect(name?: string): Promise<void>;
+    closeAllConnections(): Promise<void>;
   };
 
   // ── Tools ────────────────────────────────────────────────────────────────

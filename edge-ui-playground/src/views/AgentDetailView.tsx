@@ -32,6 +32,17 @@ import { useAgentConnection } from "../hooks/useAgentConnection";
 import { useAgentHealth } from "../hooks/useAgentHealth";
 import { useAgentInfo } from "../hooks/useAgentInfo";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
+import { renderMarkdown } from "../lib/markdown";
+import {
+  getVoiceStatus,
+  transcribeAudio,
+  synthesizeSpeech,
+  stripMarkdownForSpeech,
+  pickRecordingMimeType,
+} from "../lib/voice";
+import { toast } from "../hooks/useToast";
+import { DEPLOYMENT_API_URL } from "../constants/auth";
+import { authFetch } from "../hooks/useAuthFetch";
 import { AppErrors } from "../errors/AppError";
 import {
   TOAST_RECONNECT_EVENT,
@@ -56,8 +67,28 @@ export const AgentDetailView: React.FC<AgentDetailViewProps> = ({
   onNavigateTab,
   onNavigateBack,
 }) => {
-  const { getAgentById } = useAgentRegistry();
+  const { getAgentById, loading, error, refetch } = useAgentRegistry();
   const agent = getAgentById(agentId);
+
+  // ─── Loading / Error (registry not ready) ─────────────────────
+  // The registry is fetched from /v1/deployments on load; showing
+  // "Agent Not Found" while it is still in flight (or after a JWT
+  // expiry 401) is indistinguishable from a real removal.
+
+  if (!agent && loading) {
+    return <LoadingState message="Loading agent…" />;
+  }
+
+  if (!agent && error) {
+    return (
+      <EmptyState
+        icon="⚠️"
+        title="Couldn't Load Agents"
+        message={`${error} Your session may have expired — refresh to sign in again.`}
+        action={{ label: "Retry", onClick: refetch }}
+      />
+    );
+  }
 
   // ─── Agent Not Found ──────────────────────────────────────────
 
@@ -196,12 +227,42 @@ const AgentDetailHeader: React.FC<{
 const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
   agent,
 }) => {
-  const { status, messages, sendMessage, reconnect, reconnectAttempts, lastError, lastToolCall } = useAgentConnection(agent);
+  const { status, messages, isStreaming, sendMessage, appendMessage, regenerate, stopChat, clearChat, reconnect, reconnectAttempts, lastError, lastToolCall, commands } = useAgentConnection(agent);
   const [input, setInput] = React.useState("");
+  // ── Console slash commands (platform primitive; per-template manifest) ──
+  const [commandBusy, setCommandBusy] = React.useState(false);
+  const slashMatch = React.useMemo(() => {
+    const m = input.match(/^\/([\w-]*)$/);
+    return m ? m[1] : null;
+  }, [input]);
+  const slashCandidates = React.useMemo(() => {
+    if (slashMatch === null || commands.length === 0) return [];
+    if (slashMatch === "") return commands;
+    return commands.filter((c) => c.name.startsWith(slashMatch));
+  }, [slashMatch, commands]);
+  const agentPrefix = React.useMemo(() => {
+    const p = agent.wsPath.split("/agents/")[0];
+    return p && p.startsWith("/d/") ? p : null;
+  }, [agent.wsPath]);
+  // File attachments staged in the composer (upload → R2 → file parts).
+  const [attachments, setAttachments] = React.useState<
+    Array<{ id: string; name: string; mimeType: string; sizeBytes: number; url?: string; status: "uploading" | "ready" | "error"; error?: string }>
+  >([]);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
+  // ── Voice (fish.audio via /v1/voice/*) ──────────────────────────
+  const [voiceEnabled, setVoiceEnabled] = React.useState(false);
+  const [isRecording, setIsRecording] = React.useState(false);
+  const [transcribing, setTranscribing] = React.useState(false);
+  const [speakingId, setSpeakingId] = React.useState<string | null>(null);
+  const mediaRecorderRef = React.useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = React.useRef<BlobPart[]>([]);
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
   const [isTyping, setIsTyping] = React.useState(false);
   const [showScrollButton, setShowScrollButton] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const prevMessageCountRef = React.useRef(0);
+  const prevContentLenRef = React.useRef(0);
   const typingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Track if user sent a message and is waiting for a response
@@ -246,6 +307,16 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
     const oldCount = prevMessageCountRef.current;
     prevMessageCountRef.current = newCount;
 
+    // Streaming assistant responses update the LAST message's content in
+    // place — the message count never changes. Track total content length so
+    // long responses follow to the bottom while streaming.
+    const totalContentLen = messages.reduce(
+      (n, m) => n + (m.content ? m.content.length : 0),
+      0,
+    );
+    const contentGrew = totalContentLen > prevContentLenRef.current;
+    prevContentLenRef.current = totalContentLen;
+
     // New message arrived
     if (newCount > oldCount) {
       const lastMsg = messages[messages.length - 1];
@@ -272,10 +343,21 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
         }, 30000);
       }
 
-      // Auto-scroll only if user was already near bottom
-      if (wasNearBottom) {
+      if (lastMsg?.role === "user") {
+        // User's own (possibly long) message — always jump to the bottom,
+        // after layout settles so the target position is correct.
+        requestAnimationFrame(() => scrollToBottom(false));
+      } else if (wasNearBottom) {
+        // Auto-scroll only if user was already near bottom
         scrollToBottom();
       }
+      return;
+    }
+
+    // No new message — follow streaming content growth while near bottom.
+    if (contentGrew && isNearBottom()) {
+      // Instant (not smooth) so long streams don't visibly lag behind.
+      scrollToBottom(false);
     }
   }, [messages, status, isNearBottom, scrollToBottom]);
 
@@ -294,18 +376,283 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
     }
   }, [status]);
 
+  /** Upload a staged file to the platform (R2) and return its signed URL. */
+  const uploadFile = React.useCallback(async (file: File): Promise<void> => {
+    const tempId = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setAttachments((prev) => [...prev, { id: tempId, name: file.name, mimeType: file.type || "application/octet-stream", sizeBytes: file.size, status: "uploading" }]);
+    try {
+      const dataBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = String(reader.result ?? "");
+          // Strip the data URL prefix — the API takes raw base64.
+          resolve(result.startsWith("data:") ? result.slice(result.indexOf(",") + 1) : result);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      const apiBase = DEPLOYMENT_API_URL.replace(/\/+$/, "");
+      const res = await authFetch(`${apiBase}/v1/uploads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, mimeType: file.type || "application/octet-stream", dataBase64 }),
+        signal: AbortSignal.timeout(60000),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.error?.message || `Upload failed (${res.status})`);
+      }
+      const data = await res.json();
+      setAttachments((prev) =>
+        prev.map((a) =>
+          a.id === tempId
+            ? { ...a, url: data.upload.url, sizeBytes: data.upload.sizeBytes, status: "ready" }
+            : a,
+        ),
+      );
+    } catch (err) {
+      setAttachments((prev) =>
+        prev.map((a) =>
+          a.id === tempId ? { ...a, status: "error", error: err instanceof Error ? err.message : "Upload failed" } : a,
+        ),
+      );
+    }
+  }, []);
+
+  const handleFilesPicked = (files: FileList | null) => {
+    if (!files) return;
+    for (const file of Array.from(files).slice(0, 5)) {
+      void uploadFile(file);
+    }
+  };
+
+  // ─── Voice: availability ────────────────────────────────────────
+  React.useEffect(() => {
+    let live = true;
+    void getVoiceStatus().then((s) => {
+      if (live && s) setVoiceEnabled(s.enabled && s.hasVoice);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // ─── Voice: cleanup on unmount ──────────────────────────────────
+  React.useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      audioRef.current?.pause();
+    };
+  }, []);
+
+  /** Toggle the mic. On stop, transcribes and fills the composer for review. */
+  const toggleRecording = React.useCallback(async () => {
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      return;
+    }
+    const mimeType = pickRecordingMimeType();
+    if (!mimeType) {
+      toast.error("Voice input", "Audio recording is not supported in this browser.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recordingChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordingChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setIsRecording(false);
+        const blob = new Blob(recordingChunksRef.current, { type: mimeType || "audio/webm" });
+        recordingChunksRef.current = [];
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        try {
+          const text = await transcribeAudio(blob);
+          setInput((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+          requestAnimationFrame(() => {
+            inputRef.current?.focus();
+            inputRef.current?.setSelectionRange(inputRef.current.value.length, inputRef.current.value.length);
+          });
+        } catch (err) {
+          // Surface the transcript failure without losing the draft.
+          toast.error("Voice input", err instanceof Error ? err.message : "Transcription failed");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recorder.start(250);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch (err) {
+      setIsRecording(false);
+      toast.error(
+        "Voice input",
+        err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "SecurityError")
+          ? "Microphone access was denied."
+          : "Could not start the microphone.",
+      );
+    }
+  }, [isRecording]);
+
+  /** Read-aloud for an assistant message (toggle: click again to stop). */
+  const handleReadAloud = React.useCallback(async (messageId: string, text: string) => {
+    if (speakingId === messageId) {
+      audioRef.current?.pause();
+      audioRef.current = null;
+      setSpeakingId(null);
+      return;
+    }
+    audioRef.current?.pause();
+    const speech = stripMarkdownForSpeech(text);
+    if (!speech) return;
+    setSpeakingId(messageId);
+    try {
+      const blob = await synthesizeSpeech(speech);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      const cleanup = () => {
+        URL.revokeObjectURL(url);
+        if (audioRef.current === audio) audioRef.current = null;
+        setSpeakingId((cur) => (cur === messageId ? null : cur));
+      };
+      audio.onended = cleanup;
+      audio.onerror = () => {
+        cleanup();
+        toast.error("Read aloud", "Playback failed.");
+      };
+      await audio.play();
+    } catch (err) {
+      audioRef.current = null;
+      setSpeakingId(null);
+      toast.error("Read aloud", err instanceof Error ? err.message : "Speech generation failed");
+    }
+  }, [speakingId]);
+
+  /**
+   * Console slash command: /name arg=value "quoted value".
+   * Deterministic (no model) — POSTs to the agent's /cmd/<name> route, which
+   * runs a pipeline or tool and returns its JSON result.
+   */
+  const runSlashCommand = React.useCallback(
+    async (text: string): Promise<boolean> => {
+      const tokens = text.slice(1).trim().split(/\s+/).filter(Boolean);
+      if (tokens.length === 0) return false;
+      const cmd = commands.find((c) => c.name === tokens[0]);
+      if (!cmd) return false;
+      if (!agentPrefix) {
+        toast.error("Command", "No agent proxy route available.");
+        return true;
+      }
+      const args: Record<string, string | number> = {};
+      for (let i = 1; i < tokens.length; i++) {
+        const eq = tokens[i].indexOf("=");
+        if (eq <= 0) {
+          toast.error(`/${cmd.name}`, `Malformed argument: ${tokens[i]} (expected key=value)`);
+          return true;
+        }
+        const key = tokens[i].slice(0, eq);
+        let value: string = tokens[i].slice(eq + 1);
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        // Re-join any following tokens consumed by a quoted value.
+        args[key] = value;
+        if (value === "" && i + 1 < tokens.length) {
+          // Quoted empty value — merge the rest of this argument.
+          const rest = tokens.slice(i + 1).join(" ");
+          args[key] = rest.replace(/^["']|["']$/g, "");
+          break;
+        }
+      }
+      // Validate declared args.
+      const missing = cmd.args.filter((a) => !a.optional && !(a.name in args));
+      if (missing.length > 0) {
+        toast.error(`/${cmd.name}`, `Missing required argument: ${missing.map((a) => a.name).join(", ")}`);
+        return true;
+      }
+      setCommandBusy(true);
+      appendMessage({ id: `cmd-${Date.now()}-in`, role: "user", content: text, timestamp: new Date().toISOString() });
+      try {
+        const res = await authFetch(`${agentPrefix}/cmd/${cmd.name}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(args),
+          signal: AbortSignal.timeout(120000),
+        });
+        const payload: unknown = await res.json().catch(() => null);
+        let content: string;
+        if (!res.ok) {
+          const msg =
+            payload && typeof payload === "object" && "error" in payload
+              ? String((payload as { error: unknown }).error)
+              : `Command failed (${res.status})`;
+          content = `**/${cmd.name}** failed: ${msg}`;
+        } else if (cmd.render === "json") {
+          content = "```json\n" + JSON.stringify(payload, null, 2) + "\n```";
+        } else {
+          const textish =
+            payload && typeof payload === "object" && "result" in payload
+              ? JSON.stringify((payload as { result: unknown }).result, null, 2)
+              : JSON.stringify(payload, null, 2);
+          content = `**/${cmd.name}**\n\n${textish}`;
+        }
+        appendMessage({ id: `cmd-${Date.now()}-out`, role: "assistant", content, timestamp: new Date().toISOString() });
+      } catch (err) {
+        appendMessage({
+          id: `cmd-${Date.now()}-err`,
+          role: "assistant",
+          content: `**/${cmd.name}** failed: ${err instanceof Error ? err.message : "network error"}`,
+          timestamp: new Date().toISOString(),
+        });
+      } finally {
+        setCommandBusy(false);
+      }
+      return true;
+    },
+    [commands, agentPrefix],
+  );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
-    const sent = sendMessage(input.trim());
+    const text = input.trim();
+    if (!text || isStreaming || commandBusy) return;
+    if (attachments.some((a) => a.status === "uploading")) return; // wait for uploads
+    // Only treat as a command when it names a registered one; otherwise it's
+    // a normal chat message (e.g. "why is /health 404?").
+    if (text.startsWith("/") && commands.some((c) => text.slice(1).split(/\s+/)[0] === c.name)) {
+      void runSlashCommand(text);
+      setInput("");
+      return;
+    }
+    const ready = attachments.filter((a) => a.status === "ready" && a.url);
+    const sent = sendMessage(
+      text,
+      ready.map((a) => ({ id: a.id, name: a.name, mimeType: a.mimeType, sizeBytes: a.sizeBytes, url: a.url! })),
+    );
     if (sent) {
       setInput("");
+      setAttachments([]);
     }
   };
 
   const isConnected = status === "connected";
   const isConnecting = status === "connecting";
   const isError = status === "error";
+  // Regenerate is available when the conversation ends on an assistant
+  // reply that follows a user turn.
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const canRegenerate =
+    lastMessage?.role === "assistant" && messages.some((m) => m.role === "user");
 
   // Connection banner style based on status
   const bannerConfig = React.useMemo(() => {
@@ -358,12 +705,24 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
           </span>
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
-          {isConnected && messages.length > 0 && (
+          {isStreaming && (
+            <Button variant="secondary" size="sm" onClick={() => stopChat()}>
+              Stop
+            </Button>
+          )}
+          {isConnected && !isStreaming && canRegenerate && (
+            <Button variant="ghost" size="sm" onClick={() => regenerate()} title="Re-run the last question">
+              ↻ Regenerate
+            </Button>
+          )}
+          {isConnected && messages.length > 0 && !isStreaming && (
             <Button
               variant="ghost"
               size="sm"
               onClick={() => {
-                /* TODO: clear messages */
+                // Wipes the server-side persisted conversation too, so the
+                // next reconnect replays a clean slate.
+                clearChat();
               }}
             >
               Clear
@@ -458,6 +817,8 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
                   new Date(messages[i - 1].timestamp).getTime() +
                     5 * 60 * 1000 < new Date(msg.timestamp).getTime()
                 }
+                onReadAloud={voiceEnabled ? handleReadAloud : undefined}
+                speakingId={speakingId}
               />
             ))}
 
@@ -551,38 +912,198 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
       </div>
 
       {/* ─── Input ──────────────────────────────────────────── */}
-      <form
-        onSubmit={handleSubmit}
-        style={{
-          display: "flex",
-          gap: "8px",
-          padding: "12px 16px",
-          borderTop: `1px solid ${COLORS.border}`,
-        }}
-      >
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={isConnected ? `Message ${agent.name}…` : isConnecting ? "Connecting…" : "Connect to send messages"}
-          disabled={!isConnected}
-          style={{
-            flex: 1,
-            height: "40px",
-            padding: "0 12px",
-            borderRadius: RADIUS.md,
-            border: `1px solid ${COLORS.border}`,
-            backgroundColor: COLORS.background,
-            color: COLORS.foreground,
-            fontSize: "0.875rem",
-            outline: "none",
-            opacity: !isConnected ? 0.5 : 1,
-          }}
-        />
-        <Button type="submit" variant="primary" disabled={!isConnected || !input.trim()}>
-          Send
-        </Button>
-      </form>
+      <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "12px 16px", position: "relative" }}>
+        {/* Slash-command autocomplete (manifest from cf_agent_meta) */}
+        {slashCandidates.length > 0 && !commandBusy && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "100%",
+              left: "16px",
+              right: "16px",
+              marginBottom: "4px",
+              maxHeight: "220px",
+              overflowY: "auto",
+              backgroundColor: COLORS.card,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: RADIUS.md,
+              boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
+              zIndex: 20,
+            }}
+          >
+            {slashCandidates.map((c) => (
+              <button
+                key={c.name}
+                type="button"
+                onClick={() => {
+                  setInput(`/${c.name} `);
+                  inputRef.current?.focus();
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  textAlign: "left",
+                  padding: "8px 12px",
+                  border: "none",
+                  borderBottom: `1px solid ${COLORS.border}`,
+                  background: "none",
+                  cursor: "pointer",
+                  color: COLORS.foreground,
+                  fontFamily: "inherit",
+                }}
+              >
+                <span style={{ fontSize: "0.8125rem", fontWeight: 500, fontFamily: "monospace" }}>
+                  /{c.name}
+                  {c.args.length > 0 && (
+                    <span style={{ color: COLORS.mutedForeground, fontWeight: 400 }}>
+                      {" "}{c.args.map((a) => `<${a.name}${a.optional ? "?" : ""}>`).join(" ")}
+                    </span>
+                  )}
+                </span>
+                <div style={{ fontSize: "0.75rem", color: COLORS.mutedForeground, marginTop: "2px" }}>{c.description}</div>
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Staged attachments */}
+        {attachments.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+            {attachments.map((a) => (
+              <span
+                key={a.id}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "3px 8px",
+                  borderRadius: RADIUS.md,
+                  fontSize: "0.75rem",
+                  backgroundColor: a.status === "error" ? "var(--color-error-bg, rgba(239,68,68,0.12))" : COLORS.secondary,
+                  color: COLORS.foreground,
+                  border: `1px solid ${COLORS.border}`,
+                }}
+                title={a.error || `${a.name} (${Math.round(a.sizeBytes / 1024)} KB)`}
+              >
+                {a.status === "uploading" ? "⏳" : a.status === "error" ? "⚠️" : "📎"}
+                <span style={{ maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {a.name}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${a.name}`}
+                  onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                  style={{ border: "none", background: "none", color: COLORS.mutedForeground, cursor: "pointer", padding: 0, fontSize: "0.875rem" }}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <form
+          onSubmit={handleSubmit}
+          style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/png,image/jpeg,image/webp,image/gif,text/*,.txt,.md,.csv,.json,.js,.ts,.py,.yaml,.yml,.xml,.log,.sh,.html,.css,.toml,.sql,.ini,.go,.rs,.java,.c,.h,.cpp,.rb"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              handleFilesPicked(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            title="Attach files (images or text)"
+            disabled={!isConnected || isStreaming}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎
+          </Button>
+          {voiceEnabled && (
+            <Button
+              type="button"
+              variant={isRecording ? "destructive" : "ghost"}
+              size="sm"
+              title={isRecording ? "Stop recording" : transcribing ? "Transcribing…" : "Dictate (voice to text)"}
+              disabled={!isConnected || isStreaming || transcribing}
+              onClick={() => void toggleRecording()}
+            >
+              {transcribing ? "⏳" : isRecording ? "⏹" : "🎙"}
+            </Button>
+          )}
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+              // Pasted images become attachments automatically.
+              const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
+              if (files.length > 0) {
+                e.preventDefault();
+                handleFilesPicked(files as unknown as FileList);
+              }
+            }}
+            onKeyDown={(e) => {
+              // Tab completes the active slash candidate.
+              if (e.key === "Tab" && slashCandidates.length > 0) {
+                e.preventDefault();
+                const pick = slashCandidates[0];
+                setInput(`/${pick.name} `);
+                return;
+              }
+              // Escape dismisses the slash popup (clears to the bare slash).
+              if (e.key === "Escape" && slashMatch !== null) {
+                e.preventDefault();
+                setInput("");
+                return;
+              }
+              // Enter sends; Shift+Enter inserts a newline.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (isConnected && input.trim() && !isStreaming && !commandBusy) handleSubmit(e);
+              }
+            }}
+            rows={Math.min(5, Math.max(1, input.split("\n").length))}
+            placeholder={isConnected ? `Message ${agent.name}… (Enter to send, Shift+Enter for newline, paste images to attach)` : isConnecting ? "Connecting…" : "Connect to send messages"}
+            disabled={!isConnected || isStreaming}
+            style={{
+              flex: 1,
+              padding: "10px 12px",
+              borderRadius: RADIUS.md,
+              border: `1px solid ${COLORS.border}`,
+              backgroundColor: COLORS.background,
+              color: COLORS.foreground,
+              fontSize: "0.875rem",
+              lineHeight: 1.4,
+              outline: "none",
+              resize: "none",
+              fontFamily: "inherit",
+              opacity: !isConnected || isStreaming ? 0.6 : 1,
+            }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            {isStreaming ? (
+              <Button type="button" variant="secondary" size="sm" onClick={() => stopChat()}>
+                Stop
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={!isConnected || !input.trim() || commandBusy || attachments.some((a) => a.status === "uploading")}
+              >
+                {commandBusy ? "Running…" : input.trim().startsWith("/") && commands.some((c) => input.trim().slice(1).split(/\s+/)[0] === c.name) ? "Run" : "Send"}
+              </Button>
+            )}
+          </div>
+        </form>
+      </div>
     </Card>
   );
 };
@@ -604,11 +1125,15 @@ const TypingDot: React.FC<{ delay: number }> = ({ delay }) => (
 
 // ─── Message Bubble ──────────────────────────────────────────────
 
-const MessageBubble: React.FC<{ message: ChatMessage; showTimestamp?: boolean }> = ({
-  message,
-  showTimestamp = false,
-}) => {
+const MessageBubble: React.FC<{
+  message: ChatMessage;
+  showTimestamp?: boolean;
+  onReadAloud?: (id: string, text: string) => void;
+  speakingId?: string | null;
+}> = ({ message, showTimestamp = false, onReadAloud, speakingId }) => {
   const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+  const speaking = speakingId === message.id;
   const time = React.useMemo(() => {
     try {
       return new Date(message.timestamp).toLocaleTimeString([], {
@@ -619,6 +1144,32 @@ const MessageBubble: React.FC<{ message: ChatMessage; showTimestamp?: boolean }>
       return "";
     }
   }, [message.timestamp]);
+
+  // System notices (agent error notices, protocol messages) render as a
+  // centered muted line — not a chat bubble.
+  if (isSystem) {
+    return (
+      <div
+        style={{
+          textAlign: "center",
+          fontSize: "0.75rem",
+          color: COLORS.mutedForeground,
+          margin: "8px 16px",
+          padding: "6px 10px",
+          borderRadius: RADIUS.md,
+          backgroundColor: "var(--color-warning-bg, rgba(245, 158, 11, 0.08))",
+          wordBreak: "break-word",
+        }}
+      >
+        {message.content}
+        {time && (
+          <span style={{ opacity: 0.6, marginLeft: "8px" }}>{time}</span>
+        )}
+      </div>
+    );
+  }
+
+  const html = React.useMemo(() => renderMarkdown(message.content), [message.content]);
 
   return (
     <div>
@@ -651,10 +1202,50 @@ const MessageBubble: React.FC<{ message: ChatMessage; showTimestamp?: boolean }>
             fontSize: "0.875rem",
             lineHeight: 1.5,
             wordBreak: "break-word",
+            overflowWrap: "break-word",
+            overflowX: "auto",
           }}
         >
-          {message.content}
-          {!isUser && time && (
+          {isUser && message.attachmentNames && message.attachmentNames.length > 0 && (
+            <div style={{ marginBottom: "4px", fontSize: "0.75rem", opacity: 0.85 }}>
+              {message.attachmentNames.map((n) => (
+                <div key={n} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  📎 {n}
+                </div>
+              ))}
+            </div>
+          )}
+          {message.content && (
+            <div
+              className="chat-markdown"
+              // Sanitized by renderMarkdown (DOMPurify) — safe to inject.
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          )}
+          {!isUser && !isSystem && onReadAloud && message.content && !message.streaming && (
+            <button
+              type="button"
+              onClick={() => onReadAloud(message.id, message.content)}
+              title={speaking ? "Stop read-aloud" : "Read aloud"}
+              aria-label={speaking ? "Stop read-aloud" : "Read aloud"}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+                marginTop: "6px",
+                padding: "2px 8px",
+                fontSize: "0.72rem",
+                borderRadius: "999px",
+                border: `1px solid ${speaking ? "var(--color-error, #ef4444)" : COLORS.border}`,
+                backgroundColor: "transparent",
+                color: speaking ? "var(--color-error, #ef4444)" : COLORS.mutedForeground,
+                cursor: "pointer",
+              }}
+            >
+              {speaking ? "⏹ stop" : "🔊 read aloud"}
+            </button>
+          )}
+          {time && (
             <div
               style={{
                 fontSize: "0.625rem",
@@ -830,7 +1421,7 @@ const AgentConfigTab: React.FC<{ agent: AgentRegistryEntry }> = ({
           </div>
         ) : (
           <div style={{ padding: "12px 0", fontSize: "0.8125rem", color: COLORS.mutedForeground }}>
-            Backend not reachable. Start the agent on port {agent.port} to see deployment info.
+            Deployment info is temporarily unavailable. Check the Monitor tab for the connection status.
           </div>
         )}
       </div>
@@ -840,9 +1431,10 @@ const AgentConfigTab: React.FC<{ agent: AgentRegistryEntry }> = ({
           Model Configuration
         </h4>
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <ConfigRow label="Model" value={info?.model ?? "— (not configured)"} />
-          <ConfigRow label="Temperature" value="0.7" />
-          <ConfigRow label="Max Tokens" value="4096" />
+          <ConfigRow label="Model" value={info?.model ?? "— (not reachable)"} />
+          {/* Temperature / max-tokens are baked into the deployed worker by the
+              blueprint at publish time — they are not runtime-configurable
+              from the console, so we don't show placeholder values. */}
           <ConfigRow label="Streaming" value="Enabled" />
         </div>
       </div>
@@ -940,18 +1532,38 @@ const AgentSchedulesTab: React.FC<{ agent: AgentRegistryEntry }> = ({
 
 // ─── Storage Tab ─────────────────────────────────────────────────
 
-const AgentStorageTab: React.FC<{ agent: AgentRegistryEntry }> = () => (
+const AgentStorageTab: React.FC<{ agent: AgentRegistryEntry }> = ({ agent }) => (
   <Card>
     <Card.Header
       title="Storage"
       subtitle="Durable Object storage and bindings"
     />
-    <EmptyState
-      icon="📦"
-      title="No Storage Bindings"
-      message="This agent does not have any KV namespaces or Durable Object bindings configured."
-      action={{ label: "Add Binding", onClick: () => {} }}
-    />
+    {agent.port === 0 && agent.className ? (
+      <div style={{ display: "flex", flexDirection: "column", gap: "12px", fontSize: "14px" }}>
+        <div>
+          <b>Durable Object</b>
+          <p style={{ margin: "4px 0 0", color: COLORS.mutedForeground }}>
+            This agent runs as the Durable Object class{" "}
+            <code style={{ fontFamily: "ui-monospace, monospace", fontSize: "13px" }}>{agent.className}</code>.
+            State (conversation history, pipeline data, SQLite rows) persists
+            on that object and survives redeploys.
+          </p>
+        </div>
+        <div>
+          <b>External bindings (KV / R2 / D1)</b>
+          <p style={{ margin: "4px 0 0", color: COLORS.mutedForeground }}>
+            No additional KV, R2, or D1 bindings are configured for this agent.
+          </p>
+        </div>
+      </div>
+    ) : (
+      <EmptyState
+        icon="📦"
+        title="No Storage Bindings"
+        message="This agent does not have any KV namespaces or Durable Object bindings configured."
+        action={{ label: "Add Binding", onClick: () => {} }}
+      />
+    )}
   </Card>
 );
 

@@ -23,6 +23,8 @@ export interface AgentRegistryEntry {
   kind: AgentKind;
   /** WebSocket path (appended to configured base URL) */
   wsPath: string;
+  /** Durable Object class name (production deployments only) */
+  className?: string;
   /** Which port the agent runs on (for dev proxy config) */
   port: number;
   /** Whether this agent supports live chat */
@@ -31,6 +33,18 @@ export interface AgentRegistryEntry {
   hasCron: boolean;
   /** Capabilities this agent exposes */
   capabilities: string[];
+  /**
+   * Lifecycle status of the underlying deployment (production only).
+   * Absent/"active" = healthy; suspended/failed render with actions.
+   */
+  deploymentStatus?: "active" | "suspended" | "pending" | "failed" | string;
+  /**
+   * Personal/demo agents (e.g., polymarket-intel, gmail-invoices) are only
+   * shown in local dev when explicitly opted in via
+   * VITE_PERSONAL_AGENTS="true". They never render on auth-disabled
+   * deployments by default.
+   */
+  personal?: boolean;
 }
 
 export type AgentKind = "chat" | "cron" | "api" | "worker";
@@ -72,6 +86,7 @@ export const AGENTS: AgentRegistryEntry[] = [
     supportsChat: true,
     hasCron: true,
     capabilities: ["chat", "rpc:fetch-markets", "cron:*/20 * * * *"],
+    personal: true,
   },
   {
     id: "gmail-invoices",
@@ -84,8 +99,24 @@ export const AGENTS: AgentRegistryEntry[] = [
     supportsChat: true,
     hasCron: true,
     capabilities: ["chat", "rpc:scan-inbox", "cron:*/20 * * * *"],
+    personal: true,
   },
 ];
+
+/**
+ * Whether personal/demo agents are visible. Explicit opt-in only —
+ * auth being disabled alone does NOT surface them.
+ */
+export const PERSONAL_AGENTS_ENABLED: boolean =
+  import.meta.env.VITE_PERSONAL_AGENTS === "true";
+
+/**
+ * Agents visible in the local-dev fallback registry.
+ * Personal agents are filtered out unless explicitly opted in.
+ */
+export const VISIBLE_LOCAL_AGENTS: AgentRegistryEntry[] = AGENTS.filter(
+  (agent) => !agent.personal || PERSONAL_AGENTS_ENABLED
+);
 
 // ─── Helper Functions ────────────────────────────────────────────
 

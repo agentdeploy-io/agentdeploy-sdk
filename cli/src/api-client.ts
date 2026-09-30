@@ -114,9 +114,11 @@ async function apiRequest<T>(
   };
 
   if (!options?.skipAuth) {
+    // Per-user Bearer auth (gaps.md §10): the CLI never holds the shared
+    // INTERNAL_SERVICE_TOKEN. Identity/sellerId/userId are derived from the
+    // key server-side — this client no longer sends them.
     const auth = requireAuth();
-    headers["X-Internal-Token"] = auth.apiKey;
-    headers["X-Internal-Origin"] = "cli.agentdeploy.io";
+    headers["Authorization"] = `Bearer ${auth.apiKey}`;
   }
 
   const init: RequestInit = {
@@ -152,25 +154,37 @@ export async function verifyAndSaveCredentials(
 ): Promise<LoginResponse> {
   const baseUrl = apiUrl || getApiUrl();
 
-  // Verify the key by hitting a simple endpoint
-  const res = await fetch(`${baseUrl}/health`, {
-    headers: {
-      "X-Internal-Token": apiKey,
-      "X-Internal-Origin": "cli.agentdeploy.io",
-    },
+  // Verify the key against the real per-user auth surface — /cli/whoami
+  // resolves the key to its user. (The old /health check accepted ANY
+  // string: login "succeeded" with garbage and deploy failed later.)
+  const res = await fetch(`${baseUrl}/cli/whoami`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
   });
 
   if (!res.ok) {
-    throw new Error(`Authentication failed (${res.status}). Check your API key.`);
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: { message?: string; hint?: string };
+    };
+    const hint = body.error?.hint ? ` (${body.error.hint})` : "";
+    throw new Error(
+      body.error?.message
+        ? `${body.error.message}${hint}`
+        : `Authentication failed (${res.status}). Check your API key.`
+    );
   }
 
-  // Save credentials
+  const payload = (await res.json().catch(() => ({}))) as {
+    data?: { user_id?: string; key_name?: string };
+  };
+  const userId = payload.data?.user_id || "";
+
   saveCredentials({
     apiKey,
     apiUrl: baseUrl,
+    userId,
   });
 
-  return { userId: "", valid: true };
+  return { userId, valid: true };
 }
 
 // ── Edge Version Management ──────────────────────────────────────────────────
@@ -180,7 +194,7 @@ export async function createEdgeVersion(
 ): Promise<EdgeVersionResponse> {
   const res = await apiRequest<{ data: EdgeVersionResponse } | EdgeVersionResponse>(
     "POST",
-    "/internal/edge/versions",
+    "/cli/edge/versions",
     input
   );
 
@@ -196,7 +210,7 @@ export async function createEdgeVersion(
 export async function validateEdgeVersion(versionId: string): Promise<unknown> {
   const res = await apiRequest<unknown>(
     "POST",
-    `/internal/edge/versions/${versionId}/validate`
+    `/cli/edge/versions/${versionId}/validate`
   );
 
   if (!res.ok) {
@@ -213,13 +227,22 @@ export async function publishEdgeVersion(
 ): Promise<EdgeVersionResponse> {
   const res = await apiRequest<{ data: EdgeVersionResponse } | EdgeVersionResponse>(
     "POST",
-    `/internal/edge/versions/${versionId}/publish`,
+    `/cli/edge/versions/${versionId}/publish`,
     { changelog }
   );
 
   if (!res.ok) {
-    const err = res.data as { message?: string };
-    throw new Error(err.message || `Publish failed (${res.status})`);
+    const err = res.data as { message?: string; error?: { code?: string; message?: string } };
+    const code = err.error?.code;
+    const message = err.error?.message || err.message;
+    // Scan gate failures carry the findings list inside the message — surface
+    // the code + full message, never collapse to a generic status string.
+    if (code === "SCAN_FAILED" || code === "SCAN_REQUIRED") {
+      throw new Error(`Security scan blocked publish [${code}]\n${message ?? ""}`);
+    }
+    throw new Error(
+      message ? (code ? `[${code}] ${message}` : message) : `Publish failed (${res.status})`
+    );
   }
 
   const data = res.data as { data?: EdgeVersionResponse } | EdgeVersionResponse;
@@ -228,6 +251,12 @@ export async function publishEdgeVersion(
 
 // ── Edge Deployment Management ───────────────────────────────────────────────
 
+/**
+ * NOT wired to a /cli route: provisioning a NEW deployment runs the buyer
+ * purchase-gate + hosting-entitlement flow, which the dashboard/BFF owns
+ * (POST /internal/edge/deploy with the service token). `ad deploy` prints
+ * the dashboard link for first deploys instead.
+ */
 export async function provisionEdgeDeployment(
   input: EdgeDeployInput
 ): Promise<EdgeDeployResponse> {
@@ -247,12 +276,12 @@ export async function provisionEdgeDeployment(
 }
 
 export async function reprovisionDeployment(
-  deploymentId: string,
-  userId: string
+  deploymentId: string
 ): Promise<EdgeDeployResponse> {
+  // Ownership is enforced server-side from the Bearer key — no userId param.
   const res = await apiRequest<{ data: EdgeDeployResponse } | EdgeDeployResponse>(
     "POST",
-    `/internal/edge/deployments/${deploymentId}/reprovision?userId=${userId}`
+    `/cli/edge/deployments/${deploymentId}/reprovision`
   );
 
   if (!res.ok) {
@@ -266,11 +295,12 @@ export async function reprovisionDeployment(
 
 export async function getDeployment(
   deploymentId: string,
-  userId: string
+  _userId: string
 ): Promise<unknown> {
+  // _userId kept for call-site compatibility; identity is key-derived.
   const res = await apiRequest<unknown>(
     "GET",
-    `/internal/edge/deployments/${deploymentId}?userId=${userId}`
+    `/cli/deployments/${deploymentId}`
   );
 
   if (!res.ok) {
@@ -285,14 +315,15 @@ export async function getDeployment(
 
 export async function setSecret(
   deploymentId: string,
-  userId: string,
+  _userId: string,
   secretKey: string,
   secretValue: string
 ): Promise<void> {
+  // _userId kept for call-site compatibility; identity is key-derived.
   const res = await apiRequest<unknown>(
     "POST",
-    `/internal/deployments/${deploymentId}/secrets`,
-    { userId, secretKey, secretValue }
+    `/cli/deployments/${deploymentId}/secrets`,
+    { secretKey, secretValue }
   );
 
   if (!res.ok) {
@@ -307,7 +338,7 @@ export async function getSecrets(
 ): Promise<DeploymentSecretsResponse> {
   const res = await apiRequest<{ data: DeploymentSecretsResponse } | DeploymentSecretsResponse>(
     "GET",
-    `/internal/deployments/${deploymentId}/secrets?userId=${userId}`
+    `/cli/deployments/${deploymentId}/secrets`
   );
 
   if (!res.ok) {
@@ -325,7 +356,7 @@ export async function getRequiredSecrets(
 ): Promise<{ secrets: Array<{ key: string; required: boolean; description?: string }> }> {
   const res = await apiRequest<{ data: { secrets: Array<{ key: string; required: boolean; description?: string }> } }>(
     "GET",
-    `/internal/deployments/${deploymentId}/secrets/required?userId=${userId}`
+    `/cli/deployments/${deploymentId}/secrets/required`
   );
 
   if (!res.ok) {
@@ -366,7 +397,7 @@ export async function registerAgents(
 
   const res = await apiRequest<{ data: unknown } | { error: string; code?: string }>(
     "POST",
-    `/internal/edge/versions/${versionId}/agents`,
+    `/cli/edge/versions/${versionId}/agents`,
     { agents }
   );
 
@@ -397,7 +428,7 @@ export async function validateAgentRegistry(
 }> {
   const res = await apiRequest<{ data: Awaited<ReturnType<typeof validateAgentRegistry>> }>(
     "POST",
-    `/internal/edge/versions/${versionId}/agents/validate`
+    `/cli/edge/versions/${versionId}/agents/validate`
   );
 
   if (!res.ok) {

@@ -255,7 +255,16 @@ export const EDGE_JWT_TTL_MS = 5 * 60 * 1000;
 
 // ─── Session Check Interval ──────────────────────────────────────
 
-export const AUTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// checkAuth is a local (synchronous) JWT decode — cheap enough to run
+// frequently. A short interval ensures the proactive refresh window below is
+// always hit before the token actually expires.
+export const AUTH_CHECK_INTERVAL_MS = 15 * 1000; // 15 seconds
+/**
+ * Re-run the token exchange while this much validity remains on the edge JWT.
+ * The console then effectively stays authenticated as long as the BFF session
+ * does (the exchange only succeeds while the Better Auth session is valid).
+ */
+export const EDGE_JWT_REFRESH_WINDOW_MS = 60 * 1000; // 60 seconds
 
 // ─── Auth Error Codes ────────────────────────────────────────────
 

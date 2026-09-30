@@ -12,6 +12,9 @@
 //   ad generate tool inventory-check
 //   ad logs --follow
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { initCommand } from "./commands/init.js";
 import { loginCommand, logoutCommand } from "./commands/login.js";
 import { devCommand } from "./commands/dev.js";
@@ -29,7 +32,9 @@ const GREEN = "\x1b[32m";
 
 // ── Version ──────────────────────────────────────────────────────────────────
 
-const VERSION = "0.1.0";
+const VERSION = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")
+).version as string;
 
 // ── Help ─────────────────────────────────────────────────────────────────────
 
@@ -43,9 +48,9 @@ ${BOLD}USAGE${RESET}
 
 ${BOLD}COMMANDS${RESET}
   ${GREEN}init${RESET}       Create a new agent project
-              ad init --template <chat-agent|chat-agent-with-ui|scheduled-agent|blank> [name]
+              ad init --template <chat-agent|chat-agent-with-ui|scheduled-agent|core-agent|blank> [name]
               ad init --template chat-agent my-support-bot
-              ad init --template chat-agent-with-ui my-agent
+              ad init --template core-agent my-research-agent
 
   ${GREEN}login${RESET}      Authenticate with your AgentDeploy API key
               ad login --api-key <key>

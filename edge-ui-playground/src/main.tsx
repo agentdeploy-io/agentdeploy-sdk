@@ -48,6 +48,8 @@ import {
   AgentDetailView,
   ConversationsView,
   WorkersView,
+  CoreView,
+  CoreDetailView,
   ConfigView,
   ObservabilityView,
   SettingsView,
@@ -101,6 +103,19 @@ const App: React.FC = () => {
     navigate("/agents");
   }, [navigate]);
 
+  const handleNavigateCoreTab = React.useCallback(
+    (tabId: string) => {
+      if (route.subId) {
+        navigate(`/core/${route.subId}/${tabId}`);
+      }
+    },
+    [navigate, route.subId],
+  );
+
+  const handleNavigateCoreBack = React.useCallback(() => {
+    navigate("/core");
+  }, [navigate]);
+
   // ─── Render Current View ──────────────────────────────────────
 
   const renderView = (): React.ReactNode => {
@@ -131,6 +146,19 @@ const App: React.FC = () => {
 
       case "workers":
         return <WorkersView />;
+
+      case "core":
+        return <CoreView onNavigate={handleNavigate} />;
+
+      case "core-detail":
+        return (
+          <CoreDetailView
+            deploymentId={route.subId!}
+            tab={route.tab ?? "controls"}
+            onNavigateTab={handleNavigateCoreTab}
+            onNavigateBack={handleNavigateCoreBack}
+          />
+        );
 
       case "config":
         return <ConfigView />;

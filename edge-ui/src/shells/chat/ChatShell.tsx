@@ -27,6 +27,12 @@ import type { UIMessage } from "ai";
 import type { UITheme } from "../../theme.js";
 import { themeToCSSVars, DEFAULT_LIGHT_THEME } from "../../theme.js";
 
+/**
+ * A single chat message as rendered by ChatShell.
+ * Mirrors the UIMessage shape from the `ai` package.
+ */
+export type ChatMessage = UIMessage;
+
 export interface ChatShellProps {
   /** Agent class name to connect to (must extend AIChatAgent) */
   agent: string;
@@ -94,6 +100,22 @@ export function ChatShell({
   } as never);
 
   const isStreaming = status === "streaming" || status === "submitted";
+
+  // Derive display timestamps locally — UIMessage in this `ai` version has no createdAt field
+  const [timestamps, setTimestamps] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setTimestamps((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const m of messages) {
+        if (!(m.id in next)) {
+          next[m.id] = new Date().toLocaleTimeString();
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [messages]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -253,7 +275,7 @@ export function ChatShell({
                   textAlign: isUser ? "right" : "left",
                 }}
               >
-                {msg.createdAt ? new Date(msg.createdAt as string).toLocaleTimeString() : ""}
+                {timestamps[msg.id] ?? ""}
               </div>
             </div>
           );

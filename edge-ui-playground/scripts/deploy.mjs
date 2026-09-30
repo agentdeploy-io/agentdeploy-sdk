@@ -52,6 +52,10 @@ function logError(msg) {
   console.error(`\x1b[31m  ✗\x1b[0m ${msg}`);
 }
 
+function logWarn(msg) {
+  console.log(`\x1b[33m  ⚠\x1b[0m ${msg}`);
+}
+
 function requireEnv(name) {
   const val = process.env[name];
   if (!val) {
@@ -196,10 +200,9 @@ async function main() {
     } else {
       // Custom domains are added via the Cloudflare dashboard or API
       // wrangler doesn't have a direct CLI for this yet
-      log(`  → Add custom domain via Cloudflare dashboard:`);
-      log(`    Pages → ${projectName} → Custom domains → ${customDomain}`);
+      logWarn(`Custom domain NOT configured by this script — manual step required:`);
+      log(`  Cloudflare dashboard → Pages → ${projectName} → Custom domains → ${customDomain}`);
     }
-    logSuccess(`Custom domain configured: https://${customDomain}`);
   } else {
     logSuccess("Skipping custom domain (not Pro/Business)");
   }

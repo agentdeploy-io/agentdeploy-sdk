@@ -174,7 +174,6 @@ const TracesContent: React.FC = () => (
       icon="🔍"
       title="Tracing Not Available"
       message="Distributed tracing requires a tracing backend (e.g., Workers Analytics, Datadog, or Jaeger). Once configured, execution traces and spans will appear here."
-      action={{ label: "Learn More", onClick: () => {} }}
     />
   </Card>
 );
@@ -191,7 +190,6 @@ const LogsContent: React.FC = () => (
       icon="📋"
       title="Log Streaming Not Available"
       message="Real-time log streaming requires a log ingestion backend (e.g., Workers Analytics Engine or Logpush). Once configured, live logs from your agents will stream here."
-      action={{ label: "Learn More", onClick: () => {} }}
     />
   </Card>
 );

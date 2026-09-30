@@ -27,16 +27,32 @@ import { AppError, AppErrors } from "../errors/AppError";
 import { ErrorCode } from "../constants/errors";
 import { toast } from "./useToast";
 import { buildAuthedWsUrl } from "./useAuthFetch";
-import type { AgentConnectionStatus } from "../types/agent";
-import type { ChatMessage } from "../types/agent";
+import type { AgentConnectionStatus, ChatAttachment, ChatMessage } from "../types/agent";
 
 // ─── Types ───────────────────────────────────────────────────────
+
+export interface AgentCommand {
+  name: string;
+  description: string;
+  args: { name: string; description?: string; optional?: boolean }[];
+  render: "json" | "table" | "markdown";
+}
 
 export interface UseAgentConnectionResult {
   status: AgentConnectionStatus;
   messages: ChatMessage[];
   lastError: string | null;
-  sendMessage: (text: string) => boolean;
+  /** True while the agent is generating a reply (drives the Stop button). */
+  isStreaming: boolean;
+  sendMessage: (text: string, attachments?: ChatAttachment[]) => boolean;
+  /** Appends a message to the pane (used by console slash-command results). */
+  appendMessage: (message: ChatMessage) => void;
+  /** Re-run the last user turn (drops the previous assistant reply). */
+  regenerate: () => boolean;
+  /** Aborts the in-flight reply (stop-generation). No-op when idle. */
+  stopChat: () => boolean;
+  /** Wipes the persisted conversation (server + pane). */
+  clearChat: () => boolean;
   reconnect: () => void;
   disconnect: () => void;
   /** Connection attempt count (resets on successful connect) */
@@ -47,6 +63,8 @@ export interface UseAgentConnectionResult {
   agentIdentity: { id?: string; name?: string } | null;
   /** Last tool call observed in the stream (for UI feedback) */
   lastToolCall: { name: string; status: "running" | "done" | "error" } | null;
+  /** Console slash commands from cf_agent_meta (empty when the agent defines none) */
+  commands: AgentCommand[];
 }
 
 // ─── Hook ────────────────────────────────────────────────────────
@@ -62,6 +80,7 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
     name: string;
     status: "running" | "done" | "error";
   } | null>(null);
+  const [commands, setCommands] = useState<AgentCommand[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,6 +90,9 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
   // Track previous status to detect meaningful transitions for notifications
   const prevStatusRef = useRef<AgentConnectionStatus>("disconnected");
   const hadConnectedBeforeRef = useRef(false);
+  // Id of the in-flight chat request (null when idle) — used to target
+  // stop-generation at the exact request the agent is generating.
+  const activeRequestIdRef = useRef<string | null>(null);
 
   // ─── Cleanup ──────────────────────────────────────────────────
 
@@ -216,6 +238,7 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
 
           // Mark streaming as done
           if (isDone) {
+            activeRequestIdRef.current = null;
             setMessages((prev) => {
               if (prev.length === 0) return prev;
               const last = prev[prev.length - 1];
@@ -247,6 +270,68 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
             id: data.id as string | undefined,
             name: data.name as string | undefined,
           });
+          return;
+        }
+
+        // ── cf_agent_meta: console slash-command manifest ──
+        // Wire format: { type: "cf_agent_meta", id, name, commands: [...] }
+        // Sent once on connection open when the agent defines commands.
+        if (msgType === "cf_agent_meta") {
+          const raw = Array.isArray(data.commands) ? data.commands : [];
+          setCommands(
+            (raw as Array<Record<string, unknown>>)
+              .filter((c) => typeof c.name === "string")
+              .map((c) => ({
+                name: c.name as string,
+                description: typeof c.description === "string" ? c.description : "",
+                args: Array.isArray(c.args)
+                  ? (c.args as Array<Record<string, unknown>>).map((a) => ({
+                      name: typeof a.name === "string" ? a.name : "",
+                      description: typeof a.description === "string" ? a.description : undefined,
+                      optional: a.optional === true,
+                    }))
+                  : [],
+                render: c.render === "table" || c.render === "markdown" ? c.render : "json",
+              })),
+          );
+          return;
+        }
+
+        // ── cf_agent_chat_history: persisted conversation replay ──
+        // Wire format: { type:"cf_agent_chat_history", id, name,
+        //   messages:[{ role, content, timestamp }] }
+        // REPLACE semantics: the pane becomes exactly this list. Idempotent
+        // across reconnects — history can never duplicate in the pane.
+        if (msgType === "cf_agent_chat_history") {
+          const rawMessages = Array.isArray(data.messages) ? data.messages : [];
+          const restored: ChatMessage[] = [];
+          for (const m of rawMessages as Array<Record<string, unknown>>) {
+            const content = typeof m.content === "string" ? m.content : "";
+            if (!content) continue;
+            const role =
+              m.role === "user" || m.role === "assistant" || m.role === "system"
+                ? m.role
+                : "assistant";
+            restored.push({
+              id:
+                typeof m.id === "string" && m.id
+                  ? m.id
+                  : `hist-${restored.length}-${Date.now()}`,
+              role,
+              content,
+              timestamp:
+                typeof m.timestamp === "string" ? m.timestamp : new Date().toISOString(),
+              agentId: agent.id,
+            });
+          }
+          setMessages(restored);
+          return;
+        }
+
+        // ── cf_agent_chat_reset_ack: server confirmed the history wipe ──
+        // The pane was already cleared locally when the reset was sent;
+        // nothing to do here beyond swallowing the frame.
+        if (msgType === "cf_agent_chat_reset_ack") {
           return;
         }
 
@@ -332,10 +417,79 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
     };
   }, [agent, cleanup]);
 
+  // ─── Clear Chat (buyer "Clear conversation" control) ──────────
+  // Wipes the persisted server-side history (cf_agent_use_chat_reset) so the
+  // next reconnect replays nothing, and clears the local pane immediately.
+  const clearChat = useCallback((): boolean => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
+    try {
+      wsRef.current.send(JSON.stringify({ type: "cf_agent_use_chat_reset" }));
+    } catch {
+      // Socket died mid-send — the pane is still cleared locally.
+    }
+    setMessages([]);
+    return true;
+  }, []);
+
+  // ─── Stop Generation (abort the in-flight reply) ───────────────
+  // Sends cf_agent_chat_request_cancel for the active request. The agent
+  // aborts the upstream LLM call and replies with a finish frame; we also
+  // finalize the streaming bubble locally for immediate feedback.
+  const stopChat = useCallback((): boolean => {
+    const ws = wsRef.current;
+    const requestId = activeRequestIdRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !requestId) return false;
+    try {
+      ws.send(JSON.stringify({ type: "cf_agent_chat_request_cancel", id: requestId }));
+    } catch {
+      // Socket died mid-send — still finalize locally below.
+    }
+    activeRequestIdRef.current = null;
+    setMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      if (last.role === "assistant" && last.streaming) {
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...last, streaming: false };
+        return updated;
+      }
+      return prev;
+    });
+    return true;
+  }, []);
+
   // ─── Send Message ─────────────────────────────────────────────
 
+  /** Transmit a chat request (shared by send + regenerate). */
+  const sendRequest = useCallback(
+    (
+      requestId: string,
+      uiMessages: Array<{ id: string; role: string; parts: unknown[] }>,
+    ): void => {
+      try {
+        wsRef.current!.send(
+          JSON.stringify({
+            type: "cf_agent_use_chat_request",
+            id: requestId,
+            init: {
+              method: "POST",
+              body: JSON.stringify({ messages: uiMessages }),
+            },
+          }),
+        );
+      } catch (error) {
+        const appError = new AppError(ErrorCode.WS_MESSAGE_SEND_FAILED, {
+          context: { agentId: agent?.id },
+          cause: error,
+        });
+        errorHandler.handleError(appError, { agentId: agent?.id });
+      }
+    },
+    [agent],
+  );
+
   const sendMessage = useCallback(
-    (text: string): boolean => {
+    (text: string, attachments?: ChatAttachment[]): boolean => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         const appError = new AppError(ErrorCode.WS_MESSAGE_SEND_FAILED, {
           context: { agentId: agent?.id },
@@ -347,6 +501,7 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
       // Generate message IDs
       const userMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      activeRequestIdRef.current = requestId;
 
       // Add user message to local state immediately (optimistic)
       const userMessage: ChatMessage = {
@@ -354,6 +509,9 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
         role: "user",
         content: text,
         timestamp: new Date().toISOString(),
+        ...(attachments && attachments.length > 0
+          ? { attachmentNames: attachments.map((a) => a.name) }
+          : {}),
       };
 
       // Build the messages array for the AIChatAgent protocol.
@@ -363,41 +521,52 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
       setMessages((prev) => {
         const allMessages = [...prev, userMessage];
 
-        // Build UIMessage array from our simplified format
-        const uiMessages = allMessages.map((m) => ({
-          id: m.id,
-          role: m.role,
-          parts: [{ type: "text", text: m.content }],
-        }));
+        // Build UIMessage array from our simplified format. File parts ride
+        // on the NEW message only — earlier turns already had their
+        // attachments inlined server-side (signed URLs expire).
+        const uiMessages = allMessages.map((m, i) => {
+          const parts: unknown[] = [{ type: "text", text: m.content }];
+          if (i === allMessages.length - 1 && attachments && attachments.length > 0) {
+            for (const a of attachments) {
+              parts.push({ type: "file", url: a.url, name: a.name, mimeType: a.mimeType, size: a.sizeBytes });
+            }
+          }
+          return { id: m.id, role: m.role, parts };
+        });
 
-        // Send using the cf_agent_use_chat_request protocol
-        try {
-          const payload = {
-            type: "cf_agent_use_chat_request",
-            id: requestId,
-            init: {
-              method: "POST",
-              body: JSON.stringify({
-                messages: uiMessages,
-              }),
-            },
-          };
-          wsRef.current!.send(JSON.stringify(payload));
-        } catch (error) {
-          const appError = new AppError(ErrorCode.WS_MESSAGE_SEND_FAILED, {
-            context: { agentId: agent?.id },
-            cause: error,
-          });
-          errorHandler.handleError(appError, { agentId: agent?.id });
-        }
-
+        sendRequest(requestId, uiMessages);
         return allMessages.slice(-DEFAULT_AGENT_CONFIG.messageHistoryLimit);
       });
 
       return true;
     },
-    [agent],
+    [agent, sendRequest],
   );
+
+  // ─── Regenerate (re-run the last user turn) ────────────────────
+  // Drops the trailing assistant reply(s) after the last user message and
+  // resends that user message. Attachments from the original turn are not
+  // re-sent (their signed URLs may have expired) — the text stands alone.
+  const regenerate = useCallback((): boolean => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
+    let lastUserIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]!.role === "user") { lastUserIndex = i; break; }
+    }
+    if (lastUserIndex < 0) return false;
+    const lastUser = messages[lastUserIndex]!;
+    const kept = messages.slice(0, lastUserIndex + 1);
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    activeRequestIdRef.current = requestId;
+    const uiMessages = kept.map((m) => ({
+      id: m.id,
+      role: m.role,
+      parts: [{ type: "text", text: m.content }],
+    }));
+    sendRequest(requestId, uiMessages);
+    setMessages(kept.slice(-DEFAULT_AGENT_CONFIG.messageHistoryLimit));
+    return true;
+  }, [messages, sendRequest]);
 
   // ─── Reconnect (manual trigger) ───────────────────────────────
 
@@ -425,17 +594,30 @@ export function useAgentConnection(agent: AgentRegistryEntry | null): UseAgentCo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
 
+  // True while the agent is generating a reply (drives the Stop button).
+  const isStreaming = messages.some((m) => m.role === "assistant" && m.streaming);
+
+  const appendMessage = useCallback((message: ChatMessage) => {
+    setMessages((prev) => [...prev, message]);
+  }, []);
+
   return {
     status,
     messages,
     lastError,
+    isStreaming,
     sendMessage,
+    appendMessage,
+    regenerate,
+    stopChat,
+    clearChat,
     reconnect,
     disconnect,
     reconnectAttempts,
     agentState,
     agentIdentity,
     lastToolCall,
+    commands,
   };
 }
 

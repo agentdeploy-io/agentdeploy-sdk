@@ -33,11 +33,14 @@ import {
   BETTER_AUTH_COOKIE,
   MARKETPLACE_URL,
   EDGE_JWT_COOKIE,
+  EDGE_JWT_REFRESH_WINDOW_MS,
   EDGE_JWT_STORAGE_KEY,
   isCustomDomain,
   buildTokenExchangeUrl,
+
   buildLoginUrl,
 } from "../constants/auth";
+import { redirectWithAuthTransition } from "../components/shared/AuthTransition";
 import type { AuthState, AuthUser, EdgeJwtPayload } from "../types/auth";
 
 // ─── Cookie & JWT Utilities ──────────────────────────────────────
@@ -241,15 +244,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (localStorage.getItem(EDGE_JWT_STORAGE_KEY) as string | null);
 
       if (!token) {
-        // No token — redirect to token exchange
+        // No token — redirect to token exchange (with overlay to avoid UI flash)
         const returnUrl = window.location.href;
-        window.location.href = buildTokenExchangeUrl(returnUrl);
+        redirectWithAuthTransition(buildTokenExchangeUrl(returnUrl));
         return; // Page will redirect
       }
 
       // Decode and validate the edge JWT
       const payload = decodeJwtPayload(token);
-      if (!payload || isJwtExpired(payload)) {
+      const msLeft = payload?.exp ? payload.exp * 1000 - Date.now() : 0;
+      if (!payload || msLeft <= 0) {
         // Token expired — clean up and redirect to exchange
         try {
           localStorage.removeItem(EDGE_JWT_STORAGE_KEY);
@@ -257,7 +261,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // ignore
         }
         const returnUrl = window.location.href;
-        window.location.href = buildTokenExchangeUrl(returnUrl);
+        redirectWithAuthTransition(
+          buildTokenExchangeUrl(returnUrl),
+          "Session expired — re-authenticating…",
+        );
+        return;
+      }
+
+      // Proactively refresh before expiry (while the BFF session is still
+      // valid) so in-flight requests never hit a 401.
+      if (msLeft < EDGE_JWT_REFRESH_WINDOW_MS) {
+        const returnUrl = window.location.href;
+        redirectWithAuthTransition(
+          buildTokenExchangeUrl(returnUrl),
+          "Refreshing session…",
+        );
         return;
       }
 
@@ -271,15 +289,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: "active",
       };
 
-      setState({
-        isAuthenticated: true,
-        authDisabled: false,
-        isLoading: false,
-        user,
-        token,
-        error: null,
-        isCustomDomain: true,
-      });
+      // Periodic re-checks must not re-render the app when nothing changed.
+      setState((prev) =>
+        prev.isAuthenticated && prev.token === token && prev.user?.id === user.id
+          ? prev
+          : {
+              isAuthenticated: true,
+              authDisabled: false,
+              isLoading: false,
+              user,
+              token,
+              error: null,
+              isCustomDomain: true,
+            },
+      );
       return;
     }
 

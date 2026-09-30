@@ -66,6 +66,18 @@ export interface ChatMessage {
   streaming?: boolean;
   /** Error associated with this message (if delivery failed) */
   error?: AgentError;
+  /** File attachment names shown on user bubbles (pane display only). */
+  attachmentNames?: string[];
+}
+
+/** A file uploaded to the platform for a chat message (R2-backed). */
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** Short-lived signed URL the agent worker fetches. */
+  url: string;
 }
 
 // ─── Agent Configuration ─────────────────────────────────────────

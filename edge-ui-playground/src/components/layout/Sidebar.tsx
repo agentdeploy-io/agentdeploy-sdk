@@ -272,6 +272,14 @@ const NavIcon: React.FC<{ name: string; active: boolean }> = ({ name, active }) 
       </>
     ),
     activity: <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />,
+    server: (
+      <>
+        <rect x="2" y="2" width="20" height="8" rx="2" />
+        <rect x="2" y="14" width="20" height="8" rx="2" />
+        <line x1="6" y1="6" x2="6.01" y2="6" />
+        <line x1="6" y1="18" x2="6.01" y2="18" />
+      </>
+    ),
     gear: (
       <>
         <circle cx="12" cy="12" r="3" />

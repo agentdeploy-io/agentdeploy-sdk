@@ -30,6 +30,8 @@ import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_BADGE_VARIANT,
 } from "../constants/agents";
+import { DEPLOYMENT_API_URL } from "../constants/auth";
+import { authFetch } from "../hooks/useAuthFetch";
 import { useAgentHealth } from "../hooks/useAgentHealth";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
 import type { AgentRegistryEntry } from "../constants/agents";
@@ -42,12 +44,46 @@ export interface AgentsViewProps {
 
 // ─── Agent Card ──────────────────────────────────────────────────
 
+/** Deployment lifecycle status → badge styling. */
+const LIFECYCLE_BADGE: Record<string, { label: string; variant: "success" | "warning" | "error" | "neutral" }> = {
+  active: { label: "Active", variant: "success" },
+  pending: { label: "Provisioning", variant: "warning" },
+  suspended: { label: "Suspended", variant: "warning" },
+  failed: { label: "Failed", variant: "error" },
+};
+
+/** Call a deployment lifecycle action (resume/cancel) on the DS. */
+async function callLifecycleAction(deploymentId: string, action: "resume" | "cancel"): Promise<boolean> {
+  const apiBase = DEPLOYMENT_API_URL.replace(/\/+$/, "");
+  try {
+    const res = await authFetch(`${apiBase}/v1/deployments/${deploymentId}/${action}`, {
+      method: "POST",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 const AgentCard: React.FC<{
   agent: AgentRegistryEntry;
   onClick: () => void;
-}> = ({ agent, onClick }) => {
+  onLifecycleChanged: () => void;
+}> = ({ agent, onClick, onLifecycleChanged }) => {
   const { status, latencyMs } = useAgentHealth(agent);
   const statusVariant = AGENT_STATUS_BADGE_VARIANT[status];
+  const [acting, setActing] = React.useState<"" | "resume" | "cancel">("");
+  const isInactive = agent.deploymentStatus && agent.deploymentStatus !== "active";
+  const deploymentId = agent.id.split(":")[0];
+
+  const handleLifecycle = async (e: React.MouseEvent, action: "resume" | "cancel") => {
+    e.stopPropagation();
+    if (action === "cancel" && !window.confirm(`Cancel deployment ${deploymentId}? This deletes its worker and cannot be undone.`)) return;
+    setActing(action);
+    const ok = await callLifecycleAction(deploymentId, action);
+    setActing("");
+    if (ok) onLifecycleChanged();
+  };
 
   return (
     <Card hoverable onClick={onClick} style={{ cursor: "pointer" }}>
@@ -77,9 +113,16 @@ const AgentCard: React.FC<{
             </div>
           </div>
         </div>
-        <Badge variant={statusVariant} dot>
-          {AGENT_STATUS_LABELS[status]}
-        </Badge>
+        <div style={{ display: "flex", gap: "6px" }}>
+          {isInactive && (
+            <Badge variant={LIFECYCLE_BADGE[agent.deploymentStatus!]?.variant ?? "warning"}>
+              {LIFECYCLE_BADGE[agent.deploymentStatus!]?.label ?? agent.deploymentStatus}
+            </Badge>
+          )}
+          <Badge variant={statusVariant} dot>
+            {AGENT_STATUS_LABELS[status]}
+          </Badge>
+        </div>
       </div>
 
       {/* Description */}
@@ -116,12 +159,38 @@ const AgentCard: React.FC<{
         <span style={{ fontSize: "0.75rem", color: COLORS.mutedForeground }}>
           {latencyMs !== null ? `${latencyMs}ms latency` : "Awaiting check…"}
         </span>
-        <Button variant="ghost" size="sm" onClick={(e: React.MouseEvent) => {
-          e.stopPropagation();
-          onClick();
-        }}>
-          View Details →
-        </Button>
+        <div style={{ display: "flex", gap: "6px" }}>
+          {isInactive && (
+            <>
+              {agent.deploymentStatus !== "failed" && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={acting === "resume"}
+                  disabled={acting !== ""}
+                  onClick={(e) => handleLifecycle(e, "resume")}
+                >
+                  Resume
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                loading={acting === "cancel"}
+                disabled={acting !== ""}
+                onClick={(e) => handleLifecycle(e, "cancel")}
+              >
+                Cancel
+              </Button>
+            </>
+          )}
+          <Button variant="ghost" size="sm" onClick={(e: React.MouseEvent) => {
+            e.stopPropagation();
+            onClick();
+          }}>
+            View Details →
+          </Button>
+        </div>
       </div>
     </Card>
   );
@@ -130,7 +199,7 @@ const AgentCard: React.FC<{
 // ─── Main View ───────────────────────────────────────────────────
 
 export const AgentsView: React.FC<AgentsViewProps> = ({ onNavigateAgent }) => {
-  const { agents: AGENTS } = useAgentRegistry();
+  const { agents: AGENTS, loading, error, refetch } = useAgentRegistry();
   const [searchQuery, setSearchQuery] = React.useState("");
   const [filterKind, setFilterKind] = React.useState<string>("all");
 
@@ -158,32 +227,9 @@ export const AgentsView: React.FC<AgentsViewProps> = ({ onNavigateAgent }) => {
             Agents
           </h1>
           <p style={{ fontSize: "0.875rem", color: COLORS.mutedForeground }}>
-            {AGENTS.length} agents registered
+            {AGENTS.length} agents registered — new agents are purchased from the marketplace
           </p>
         </div>
-        <Dropdown
-          trigger={
-            <Button variant="primary">
-              + New Agent
-            </Button>
-          }
-          align="right"
-          width={220}
-        >
-          <Dropdown.Item icon={<span>💬</span>} onClick={() => { /* TODO: create chat agent */ }}>
-            Chat Agent
-          </Dropdown.Item>
-          <Dropdown.Item icon={<span>🕐</span>} onClick={() => { /* TODO: create cron agent */ }}>
-            Cron / Scheduled Agent
-          </Dropdown.Item>
-          <Dropdown.Item icon={<span>🔗</span>} onClick={() => { /* TODO: create API agent */ }}>
-            API / Webhook Agent
-          </Dropdown.Item>
-          <Dropdown.Divider />
-          <Dropdown.Item icon={<span>📦</span>} onClick={() => { /* TODO: import from template */ }}>
-            Import from Template
-          </Dropdown.Item>
-        </Dropdown>
       </div>
 
       {/* ─── Filter Bar ──────────────────────────────────────── */}
@@ -250,7 +296,20 @@ export const AgentsView: React.FC<AgentsViewProps> = ({ onNavigateAgent }) => {
       </div>
 
       {/* ─── Agent Grid ──────────────────────────────────────── */}
-      {filteredAgents.length === 0 ? (
+      {error ? (
+        <Card>
+          <EmptyState
+            icon="⚠️"
+            title="Couldn't Load Agents"
+            message={`${error} If this keeps happening, reload the page to re-authenticate.`}
+            action={{ label: "Retry", onClick: refetch }}
+          />
+        </Card>
+      ) : loading ? (
+        <Card>
+          <EmptyState icon="⏳" title="Loading Agents…" message="Fetching your deployments." />
+        </Card>
+      ) : filteredAgents.length === 0 ? (
         <Card>
           <EmptyState
             icon={searchQuery ? "🔍" : "🤖"}
@@ -280,6 +339,7 @@ export const AgentsView: React.FC<AgentsViewProps> = ({ onNavigateAgent }) => {
               key={agent.id}
               agent={agent}
               onClick={() => onNavigateAgent(agent.id)}
+              onLifecycleChanged={refetch}
             />
           ))}
         </div>

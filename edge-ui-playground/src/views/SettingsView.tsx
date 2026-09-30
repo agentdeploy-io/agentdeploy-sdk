@@ -65,13 +65,25 @@ export const SettingsView: React.FC<SettingsViewProps> = () => {
 const ProfileSection: React.FC = () => {
   const [name, setName] = useLocalStorage("edge-user-name", "Edge Admin");
   const [email, setEmail] = useLocalStorage("edge-user-email", "admin@agentdeploy.io");
+  const [savedAt, setSavedAt] = React.useState<number | null>(null);
+
+  const handleSave = React.useCallback(() => {
+    // Fields already persist to localStorage on change; Save is an
+    // explicit confirmation for the user.
+    setSavedAt(Date.now());
+    window.setTimeout(() => setSavedAt(null), 2000);
+  }, []);
 
   return (
     <Card>
       <Card.Header
         title="Profile"
-        subtitle="Your account information"
-        actions={<Button variant="primary" size="sm">Save</Button>}
+        subtitle="Your account information — changes are stored locally in this browser"
+        actions={
+          <Button variant="primary" size="sm" onClick={handleSave}>
+            {savedAt ? "Saved ✓" : "Save"}
+          </Button>
+        }
       />
       <div style={{ display: "flex", flexDirection: "column", gap: "20px", maxWidth: "480px" }}>
         <Input label="Display Name" value={name} onChange={(e) => setName(e.target.value)} />

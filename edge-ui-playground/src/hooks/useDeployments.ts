@@ -20,11 +20,14 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   type AgentRegistryEntry,
-  AGENTS as LOCAL_DEV_AGENTS,
+  /** Personal/demo agents are filtered out unless VITE_PERSONAL_AGENTS=true */
+  VISIBLE_LOCAL_AGENTS as LOCAL_DEV_AGENTS,
 } from "../constants/agents";
-import { AUTH_DISABLED, DEPLOYMENT_API_URL } from "../constants/auth";
+import { AUTH_DISABLED, DEPLOYMENT_API_URL, EDGE_JWT_STORAGE_KEY, isCustomDomain, buildTokenExchangeUrl } from "../constants/auth";
 import { authFetch } from "./useAuthFetch";
+import { useAuth } from "./useAuth";
 import { errorHandler } from "../errors/errorHandler";
+import { redirectWithAuthTransition } from "../components/shared/AuthTransition";
 import { ErrorCode } from "../constants/errors";
 import type { PurchasedTemplate, PurchasedTemplateAgent } from "../types/auth";
 
@@ -69,12 +72,14 @@ function templateToAgentEntry(
     icon: t.icon,
     kind: t.kind,
     wsPath: agent?.wsPath ?? t.wsPath,
+    className: agent?.className,
     // In production, port is irrelevant — all requests are same-origin.
     // We set it to 0 to signal "not applicable" (the dev proxy won't be used).
     port: 0,
     supportsChat: t.supportsChat,
     hasCron: t.hasCron,
     capabilities: t.capabilities,
+    deploymentStatus: t.deploymentStatus,
   };
 }
 
@@ -100,6 +105,11 @@ export function useDeployments(): UseDeploymentsResult {
   const [loading, setLoading] = useState<boolean>(!AUTH_DISABLED);
   const [error, setError] = useState<string | null>(null);
   const [refetchKey, setRefetchKey] = useState(0);
+  // Gate on auth readiness: AuthProvider is a parent, so its checkAuth effect
+  // runs AFTER this one. On a token-exchange redirect-back, checkAuth is what
+  // stores ?edge_token into localStorage — fetching before it runs sends a
+  // stale/missing token and 401s (the "Couldn't Load Agents" flake).
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
 
   const refetch = useCallback(() => {
     setRefetchKey((k) => k + 1);
@@ -111,6 +121,9 @@ export function useDeployments(): UseDeploymentsResult {
       setLoading(false);
       return;
     }
+
+    // Wait for auth to resolve before firing (token must be in localStorage).
+    if (authLoading || !isAuthenticated) return;
 
     // Empty DEPLOYMENT_API_URL means same-origin: the console Worker
     // proxies /v1/* to the marketplace BFF (avoids CORS entirely).
@@ -131,6 +144,34 @@ export function useDeployments(): UseDeploymentsResult {
         if (cancelled) return;
 
         if (!response.ok) {
+          // 401 on a custom-domain console means the edge JWT is stale/expired.
+          // Drop it and re-run the token exchange instead of failing silently.
+          if (response.status === 401 && isCustomDomain()) {
+            // Just returned from an exchange (token still in the URL — the
+            // provider stores it on this pass). The 401 is from a stale
+            // in-flight request; retry once with the fresh token instead of
+            // looping into another exchange.
+            if (new URLSearchParams(window.location.search).has("edge_token")) {
+              refetch();
+              return;
+            }
+            // Loop guard: if we just came back from an exchange and still got
+            // 401, surface the error instead of redirecting forever.
+            const justExchanged = sessionStorage.getItem("edge_exchange_attempt");
+            if (justExchanged) {
+              sessionStorage.removeItem("edge_exchange_attempt");
+              throw new Error("Authentication failed (401). Please log in again and reload.");
+            }
+            try {
+              localStorage.removeItem(EDGE_JWT_STORAGE_KEY);
+              sessionStorage.setItem("edge_exchange_attempt", "1");
+            } catch {
+              // ignore
+            }
+            // Show branded overlay so the 401 re-exchange doesn't flash raw UI
+            redirectWithAuthTransition(buildTokenExchangeUrl(window.location.href));
+            return;
+          }
           throw new Error(
             `Failed to load deployments: ${response.status} ${response.statusText}`,
           );
@@ -143,13 +184,13 @@ export function useDeployments(): UseDeploymentsResult {
           throw new Error("Invalid response: missing deployments array");
         }
 
-        // Filter out suspended/failed deployments
-        const activeDeployments = data.deployments.filter(
-          (d) =>
-            !d.deploymentStatus || d.deploymentStatus === "active",
+        // Keep suspended/failed deployments visible (with resume/cancel
+        // actions in the UI) — only drop fully cancelled ones.
+        const visibleDeployments = data.deployments.filter(
+          (d) => d.deploymentStatus !== "cancelled",
         );
 
-        const entries = activeDeployments.flatMap(templateToAgentEntries);
+        const entries = visibleDeployments.flatMap(templateToAgentEntries);
         setAgents(entries);
         setError(null);
       } catch (err) {
@@ -171,7 +212,7 @@ export function useDeployments(): UseDeploymentsResult {
     return () => {
       cancelled = true;
     };
-  }, [refetchKey]);
+  }, [refetchKey, authLoading, isAuthenticated, refetch]);
 
   return { agents, loading, error, refetch };
 }

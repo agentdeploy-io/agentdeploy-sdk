@@ -47,6 +47,30 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
 
+    // ── Runtime config — served DYNAMICALLY (Reliability Plan R3.1/R3.2) ──
+    // Fetches config from the deployment-service at request time (edge-cached
+    // 60s) instead of relying on a baked static asset. Config changes
+    // propagate within 60s with zero console redeploys. On upstream failure,
+    // serves the last-good copy with staleConfig: true so the UI can warn.
+    if (pathname === "/runtime-config.js") {
+      return serveRuntimeConfig(request, env, ctx);
+    }
+
+    // ── Console version endpoint (R3.3) ─────────────────────────────────
+    // Reports bundle + config hashes for operator staleness dashboards.
+    if (pathname === "/_console/version") {
+      const config = await getCachedConfig(request, env, ctx);
+      return new Response(
+        JSON.stringify({
+          bundleHash: env.CONSOLE_BUNDLE_HASH || "unknown",
+          configHash: config?.configHash ?? "unknown",
+          configStale: !!config?.staleConfig,
+          generatedAt: config?.generatedAt ?? null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } },
+      );
+    }
+
     // ── Per-deployment proxy ────────────────────────────────────
     // Routes: /d/{deploymentId}/* → that deployment's agent Worker.
     // The deploymentId → worker URL map is provided via the
@@ -124,7 +148,160 @@ export default {
   },
 };
 
+// ─── Dynamic Runtime Config (R3.1/R3.2) ──────────────────────────
+
+const CONFIG_CACHE_TTL_S = 60;
+const CONFIG_STALE_FALLBACK_TTL_S = 7 * 24 * 60 * 60; // last-good kept 7 days
+
+/**
+ * Identify the buyer for config-fetch purposes. The console Worker is
+ * per-buyer; the deployment-service keys config by userId passed at deploy
+ * time via the CONSOLE_USER_ID binding.
+ */
+function consoleUserId(env) {
+  return env.CONSOLE_USER_ID || "";
+}
+
+/**
+ * Fetch + edge-cache the runtime config from the deployment-service.
+ * Cache layout:
+ *   fresh:  caches.default + KV-less lastGood copy in the same cache with a
+ *           long TTL so upstream outages degrade to stale-with-flag, not down.
+ */
+async function getCachedConfig(request, env, ctx) {
+  const userId = consoleUserId(env);
+  if (!userId) {
+    // No user bound (manual wrangler deploys): fall back to baked asset if
+    // present, else empty config — same behavior as pre-R3 consoles.
+    return null;
+  }
+
+  const upstream = env.DEPLOYMENT_SERVICE_URL; // set by deployer
+  if (!upstream) return null;
+
+  const cache = caches.default;
+  const configUrl = new URL(
+    `/v1/console/config?userId=${encodeURIComponent(userId)}`,
+    upstream,
+  );
+
+  // 1. Fresh edge cache
+  let res = await cache.match(configUrl.href);
+  if (res && !isExpired(res)) {
+    return { ...(await res.json()), staleConfig: false };
+  }
+
+  // 2. Upstream fetch (internal-token authed)
+  try {
+    const upstreamRes = await fetch(configUrl.href, {
+      headers: { "X-Internal-Token": env.DEPLOYMENT_SERVICE_TOKEN || "" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (upstreamRes.ok) {
+      const body = await upstreamRes.json();
+      const cachedHeaders = new Headers({ "Content-Type": "application/json" });
+      cachedHeaders.set(
+        "x-config-fetched-at",
+        String(Date.now()),
+      );
+      cachedHeaders.set(
+        "cache-control",
+        `public, max-age=${CONFIG_CACHE_TTL_S}, stale-while-revalidate=${CONFIG_STALE_FALLBACK_TTL_S}`,
+      );
+      const cachedRes = new Response(JSON.stringify(body), { headers: cachedHeaders });
+      ctx.waitUntil(cache.put(configUrl.href, cachedRes.clone()));
+      return { ...body, staleConfig: false };
+    }
+    throw new Error(`upstream ${upstreamRes.status}`);
+  } catch (err) {
+    // 3. Last-good fallback (R3.2) — serve stale with flag rather than fail
+    if (res) {
+      return { ...(await res.json()), staleConfig: true };
+    }
+    console.error("Console config fetch failed and no last-good copy:", err?.message || err);
+    return null;
+  }
+}
+
+function isExpired(res) {
+  const fetchedAt = Number(res.headers.get("x-config-fetched-at") || 0);
+  if (!fetchedAt) return false; // no timestamp → treat as valid
+  return Date.now() - fetchedAt > CONFIG_CACHE_TTL_S * 1000;
+}
+
+/** Serve /runtime-config.js dynamically with last-good fallback. */
+async function serveRuntimeConfig(request, env, ctx) {
+  const config = await getCachedConfig(request, env, ctx);
+
+  let cfg = {};
+  let staleConfig = false;
+  if (config && config.config) {
+    cfg = config.config;
+    staleConfig = !!config.staleConfig;
+  } else {
+    // No dynamic source configured (local dev / legacy manual deploys):
+    // fall back to the static baked asset served by the platform.
+    try {
+      const assets = env.ASSETS;
+      if (assets && typeof assets.fetch === "function") {
+        const assetRes = await assets.fetch(new URL("/runtime-config.js", request.url));
+        if (assetRes.ok) return assetRes;
+      }
+    } catch {}
+  }
+
+  cfg = { ...cfg, ...(staleConfig ? { STALE_CONFIG: true } : {}) };
+  return new Response(
+    `window.__EDGE_CONSOLE_CONFIG__ = ` + JSON.stringify(cfg) + `;`,
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "application/javascript",
+        "Cache-Control": "no-store", // the Worker caches upstream, not the browser
+      },
+    },
+  );
+}
+
 // ─── Proxy Helpers ───────────────────────────────────────────────
+
+// ── Per-deployment edge-JWT minting (gated agent workers) ─────────
+// Blueprint workers verify short-lived edge JWTs (AUTH.md Path 2). The
+// console worker mints one per deployment via the deployment-service
+// internal API (X-Internal-Token + allowlisted origin) and pins it on
+// every proxied request. In-memory cache — the token TTL is 5 min.
+const jwtCache = new Map(); // deploymentId → { token, expiresAt }
+
+async function mintDeploymentJwt(env, deploymentId) {
+  const cached = jwtCache.get(deploymentId);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+  if (!env.DEPLOYMENT_SERVICE_URL || !env.DEPLOYMENT_SERVICE_TOKEN || !env.CONSOLE_USER_ID) {
+    return null;
+  }
+  try {
+    const svc = new URL(env.DEPLOYMENT_SERVICE_URL);
+    const res = await fetch(
+      `${svc.origin}/api/deployment-service/internal/edge/jwt?deploymentId=${encodeURIComponent(deploymentId)}&userId=${encodeURIComponent(env.CONSOLE_USER_ID)}`,
+      {
+        headers: {
+          "X-Internal-Token": env.DEPLOYMENT_SERVICE_TOKEN,
+          "X-Internal-Origin": svc.origin,
+        },
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    if (!res.ok) return null;
+    const body = await res.json();
+    const payload = body && body.data ? body.data : body;
+    const token = payload && payload.token;
+    if (!token) return null;
+    const ttlSeconds = payload.expiresIn || 300;
+    jwtCache.set(deploymentId, { token, expiresAt: Date.now() + Math.max(ttlSeconds - 30, 60) * 1000 });
+    return token;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Proxy a request to a specific deployment's agent Worker.
@@ -146,6 +323,15 @@ async function proxyToDeployment(request, env, deploymentId, restPath) {
   const targetUrl = new URL("/" + restPath, target);
   targetUrl.search = url.search;
 
+  // Pin an agent-scoped edge JWT on the target request: Bearer header for
+  // HTTP, ?token= for WebSocket handshakes (browsers can't set WS headers).
+  // This OVERRIDES any client-supplied token — the client's console JWT is
+  // audience-pinned to the console host, not the agent host.
+  const agentJwt = await mintDeploymentJwt(env, deploymentId);
+  if (agentJwt) {
+    targetUrl.searchParams.set("token", agentJwt);
+  }
+
   // Same-account worker→workers.dev fetches do NOT route through the target
   // worker's run_worker_first rules (they land on its static assets → 404).
   // The deployer adds a service binding per deployment (D_{id}) — prefer it.
@@ -157,6 +343,10 @@ async function proxyToDeployment(request, env, deploymentId, restPath) {
       body: request.body,
       redirect: "manual",
     };
+    // The agent's JWT gate audience-checks the Host header — pin the
+    // target's own host (service bindings forward the original Host).
+    init.headers.set("Host", new URL(target).host);
+    if (agentJwt) init.headers.set("Authorization", "Bearer " + agentJwt);
     try {
       return await binding.fetch(targetUrl.href, init);
     } catch (err) {
@@ -171,9 +361,12 @@ async function proxyToDeployment(request, env, deploymentId, restPath) {
   }
 
   // Fallback: plain fetch (cross-account / service binding missing).
+  const fallbackHeaders = new Headers(request.headers);
+  fallbackHeaders.set("Host", new URL(target).host);
+  if (agentJwt) fallbackHeaders.set("Authorization", "Bearer " + agentJwt);
   const proxyRequest = new Request(targetUrl, {
     method: request.method,
-    headers: new Headers(request.headers),
+    headers: fallbackHeaders,
     body: request.body,
     redirect: "manual",
   });

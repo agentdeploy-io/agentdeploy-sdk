@@ -10,7 +10,7 @@
 //   - defineTool()       → Typed tool factory with telemetry
 //   - useGateway()       → LLM gateway integration (billing + routing)
 //   - useSecrets()       → Typed secret access
-//   - useMcp()           → MCP server connection
+//   - connectMcp()       → MCP server connection
 //   - createHandler()    → Worker entry point with agent routing
 
 // Agent factories
@@ -21,13 +21,25 @@ export { createChatAgent } from "./chat-agent.js";
 export { defineTool } from "./tool.js";
 
 // Gateway integration
-export { useGateway, gatewayUrl, gatewayHeaders } from "./gateway.js";
+export { useGateway, gatewayUrl, gatewayHeaders, gatewayFetchWithBackoff, parseLlmJson } from "./gateway.js";
+export {
+  RUNTIME_ERROR_CODES,
+  RuntimeApiError,
+  gatewayErrorFromResponse,
+  runtimeErrorResponse,
+  runtimeErrorFromStackText,
+  customerMessageFor,
+  statusFor,
+} from "./runtime-error.js";
+export type { RuntimeErrorCode } from "./runtime-error.js";
 
 // Secret access
 export { useSecrets, hasSecret, getSecret } from "./secrets.js";
 
 // MCP integration
 export { connectMcp, disconnectMcp } from "./mcp.js";
+export { createEdgeMcpRoute, McpServer, createMcpHandler } from "./mcp-server.js";
+export type { EdgeMcpRouteOptions, EdgeMcpToolDef, EdgeMcpAgentLike } from "./mcp-server.js";
 
 // Handler factory
 export { createHandler } from "./handler.js";

@@ -100,7 +100,7 @@ function sharedPackageJson(projectName: string): string {
     "agents": "^0.18.0",
     "@cloudflare/ai-chat": "^0.9.0",
     "ai": "^6.0.0",
-    "zod": "^3.0.0",
+    "zod": "^4.0.0",
     "@ai-sdk/openai": "^1.0.0"
   },
   "devDependencies": {
@@ -537,7 +537,7 @@ export const chatAgentWithUITemplate: ProjectTemplate = {
     "agents": "^0.18.0",
     "@cloudflare/ai-chat": "^0.9.0",
     "ai": "^6.0.0",
-    "zod": "^3.0.0",
+    "zod": "^4.0.0",
     "@ai-sdk/openai": "^1.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -706,12 +706,193 @@ Available shells: ChatShell, WidgetShell, DashboardShell, SplitShell.
   ],
 };
 
+// ── Template: core-agent ─────────────────────────────────────────────────────
+
+export const coreAgentTemplate: ProjectTemplate = {
+  name: "core-agent",
+  description: "A long-running core agent on Fly.io VM with task handlers, SQLite, and budget fencing",
+  files: [
+    {
+      path: "src/server.ts",
+      content: `import { createCoreAgent, defineTaskHandler } from "@agentdeploy-io/core-sdk";
+import { z } from "zod";
+
+const defaultHandler = defineTaskHandler({
+  description: "Process a task",
+  inputSchema: z.object({
+    prompt: z.string().describe("The task prompt"),
+  }),
+
+  async execute(input, ctx) {
+    ctx.reportProgress("processing", { prompt: input.prompt });
+
+    const result = await ctx.gateway.chat([
+      { role: "system", content: "You are a helpful assistant." },
+      { role: "user", content: input.prompt },
+    ]);
+
+    return {
+      state: "succeeded",
+      output: { response: result },
+    };
+  },
+});
+
+export default createCoreAgent({
+  name: "{{AGENT_NAME}}",
+  description: "A long-running AI agent with task handlers",
+  taskHandlers: {
+    default: defaultHandler,
+  },
+  async onStart(ctx) {
+    ctx.sql.exec(\`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY,
+        input TEXT,
+        output TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    \`);
+  },
+});
+`,
+    },
+    {
+      path: "package.json",
+      content: `{
+  "name": "{{PROJECT_NAME}}",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@agentdeploy-io/core-sdk": "^0.1.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
+`,
+    },
+    {
+      path: "tsconfig.json",
+      content: `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"]
+}
+`,
+    },
+    {
+      path: "Dockerfile",
+      content: `FROM node:22-alpine
+WORKDIR /app
+COPY package.json ./
+RUN npm ci --omit=dev
+COPY src/ ./src/
+RUN npm install tsx && npx tsx --version
+VOLUME /data
+ENV PORT=8080
+ENV DATA_DIR=/data
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \\
+  CMD wget -q --spider http://localhost:8080/health || exit 1
+CMD ["npx", "tsx", "src/server.ts"]
+`,
+    },
+    {
+      path: "docker-compose.yml",
+      content: `version: "3.9"
+services:
+  agent:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - agent-data:/data
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+      DEPLOYMENT_ID: local-dev
+      USER_ID: local-dev
+      TEMPLATE_ID: "0"
+      MODEL: openai/gpt-4o-mini
+      MAX_TOKENS_PER_DAY: "500000"
+      MAX_VM_HOURS_PER_DAY: "4"
+volumes:
+  agent-data:
+`,
+    },
+    {
+      path: ".agentdeploy/config.json",
+      content: `{
+  "projectId": "{{PROJECT_NAME}}",
+  "name": "{{PROJECT_NAME}}",
+  "template": "core-agent",
+  "runtime": "core",
+  "entrypoint": "src/server.ts",
+  "model": "openai/gpt-4o-mini"
+}
+`,
+    },
+    {
+      path: "README.md",
+      content: `# {{PROJECT_NAME}}
+
+A long-running AI agent built with @agentdeploy-io/core-sdk.
+
+## Quick Start
+
+\\\`\\\`\\\`bash
+npm install
+npm run dev        # Run locally with tsx watch
+docker compose up  # Run in Docker with /data volume
+\\\`\\\`\\\`
+
+## Deploy
+
+\\\`\\\`\\\`bash
+ad deploy --runtime core
+\\\`\\\`\\\`
+
+## Architecture
+
+This agent runs on a Fly.io VM with:
+- **Supervisor Protocol** for platform health monitoring
+- **SQLite** on /data volume for persistent state
+- **Checkpoint/restore** for crash recovery
+- **Budget fencing** (token + VM-hour limits)
+- **LLM gateway** for billed inference
+`,
+    },
+    {
+      path: ".gitignore",
+      content: sharedGitignore() + "dist/\n*.db\n",
+    },
+  ],
+};
+
 // ── Template registry ────────────────────────────────────────────────────────
 
 export const TEMPLATES: Record<string, ProjectTemplate> = {
   "chat-agent": chatAgentTemplate,
   "chat-agent-with-ui": chatAgentWithUITemplate,
   "scheduled-agent": scheduledAgentTemplate,
+  "core-agent": coreAgentTemplate,
   blank: blankTemplate,
 };
 

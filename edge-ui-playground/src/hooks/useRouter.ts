@@ -24,6 +24,8 @@ const VALID_VIEWS: ViewId[] = [
   "agent-detail",
   "conversations",
   "workers",
+  "core",
+  "core-detail",
   "config",
   "observability",
   "settings",
@@ -51,6 +53,21 @@ function parsePath(pathname: string): RouteParams {
   // /agents → agents list
   if (firstSegment === "agents") {
     return { view: "agents" };
+  }
+
+  // /core/:deploymentId/:tab — core (Fly.io VM) deployment detail.
+  // The deployment id reuses the subId slot; tab defaults to "controls".
+  if (firstSegment === "core" && segments.length >= 2) {
+    return {
+      view: "core-detail",
+      subId: segments[1],
+      tab: segments[2] ?? "controls",
+    };
+  }
+
+  // /core → core deployments list
+  if (firstSegment === "core") {
+    return { view: "core" };
   }
 
   // /conversations/:conversationId

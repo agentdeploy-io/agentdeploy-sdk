@@ -29,3 +29,25 @@ export type { SettingsViewProps } from "./SettingsView";
 
 export { NotFoundView } from "./NotFoundView";
 export type { NotFoundViewProps } from "./NotFoundView";
+
+// Core (Fly.io VM) agent views
+export { CoreView } from "./CoreView";
+export type { CoreViewProps } from "./CoreView";
+
+export { CoreDetailView } from "./CoreDetailView";
+export type { CoreDetailViewProps } from "./CoreDetailView";
+
+export { CoreTaskListView } from "./CoreTaskListView";
+export type { CoreTaskListViewProps } from "./CoreTaskListView";
+
+export { CoreCostView } from "./CoreCostView";
+export type { CoreCostViewProps } from "./CoreCostView";
+
+export { CoreHITLInbox } from "./CoreHITLInbox";
+export type { CoreHITLInboxProps } from "./CoreHITLInbox";
+
+export { CoreControlsView } from "./CoreControlsView";
+export type { CoreControlsViewProps } from "./CoreControlsView";
+
+export { CoreEventsView } from "./CoreEventsView";
+export type { CoreEventsViewProps } from "./CoreEventsView";

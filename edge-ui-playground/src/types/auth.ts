@@ -78,7 +78,7 @@ export interface PurchasedTemplate {
   /** Template ID from marketplace */
   templateId?: string;
   /** Deployment status */
-  deploymentStatus?: "active" | "suspended" | "pending" | "failed";
+  deploymentStatus?: "active" | "suspended" | "pending" | "failed" | "cancelled";
   /** Custom domain for this specific deployment (if Pro/Business) */
   customDomain?: string | null;
   /** All agents in this deployment (multi-agent templates) */

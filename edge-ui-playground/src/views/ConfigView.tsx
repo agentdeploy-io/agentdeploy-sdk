@@ -30,7 +30,7 @@ import { EmptyState } from "../components/shared";
 import { COLORS, RADIUS } from "../constants/theme";
 import { useAgentInfo } from "../hooks/useAgentInfo";
 import { useAgentRegistry } from "../hooks/useAgentRegistry";
-import type { AgentRegistryEntry } from "../constants/agents";
+import { type AgentRegistryEntry, PERSONAL_AGENTS_ENABLED } from "../constants/agents";
 
 // ─── Props ───────────────────────────────────────────────────────
 
@@ -222,8 +222,12 @@ const SecretsSection: React.FC = () => {
     const map = new Map<string, string[]>();
     map.set("OPENAI_API_KEY", ["support", "sales"]);
     map.set("ANTHROPIC_API_KEY", []);
-    map.set("POLYMARKET_API_KEY", ["polymarket-intel"]);
-    map.set("GMAIL_OAUTH_TOKEN", ["gmail-invoices"]);
+    // Personal/demo agents' secrets only shown when explicitly opted in
+    // via VITE_PERSONAL_AGENTS="true" — never on default deployments.
+    if (PERSONAL_AGENTS_ENABLED) {
+      map.set("POLYMARKET_API_KEY", ["polymarket-intel"]);
+      map.set("GMAIL_OAUTH_TOKEN", ["gmail-invoices"]);
+    }
     return map;
   }, []);
 

@@ -46,20 +46,28 @@ export function useAgentHealth(
   const checkHealth = useCallback(async () => {
     if (!agent || !isMountedRef.current) return;
 
-    // Production (same-origin Worker): no dev-proxy port to health-check.
-    // Connection status comes from the WebSocket itself, not HTTP polling.
-    if (agent.port === 0) return;
-
     // Don't poll if tab is hidden (save resources)
     if (document.hidden) return;
 
     const startTime = performance.now();
 
     try {
-      const protocol = window.location.protocol === "https:" ? "https:" : "http:";
-      const host = window.location.host;
-      // Health check via the Vite proxy: /health/{port} → backend /health
-      const healthUrl = `${protocol}//${host}/health/${agent.port}`;
+      // Dev mode: health check via the Vite proxy /health/{port}.
+      // Production: the wsPath carries the per-deployment console proxy
+      // prefix (/d/{id}) — probe the agent Worker's open /health endpoint
+      // through it (the JWT gate keeps /health public, and the console
+      // proxy attaches a minted token regardless).
+      let healthUrl: string | null = null;
+      if (agent.port > 0) {
+        const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+        healthUrl = `${protocol}//${window.location.host}/health/${agent.port}`;
+      } else {
+        const prefix = agent.wsPath.split("/agents/")[0];
+        if (prefix && prefix.startsWith("/d/")) healthUrl = `${prefix}/health`;
+      }
+      // No health endpoint reachable (e.g. local dev entries without a
+      // proxy prefix) — connection status comes from the WebSocket itself.
+      if (!healthUrl) return;
 
       const response = await authFetch(healthUrl, {
         method: "GET",

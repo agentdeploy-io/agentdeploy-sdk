@@ -16,7 +16,6 @@ import {
   createEdgeVersion,
   validateEdgeVersion,
   publishEdgeVersion,
-  provisionEdgeDeployment,
   reprovisionDeployment,
   registerAgents,
   validateAgentRegistry,
@@ -99,7 +98,9 @@ export async function deployCommand(args: DeployArgs): Promise<void> {
 
   const versionResponse = await createEdgeVersion({
     templateId: config.templateId || 0,
-    sellerId: auth.userId || auth.apiKey,
+    // Server overrides sellerId from the Bearer key (ownership-checked);
+    // this field only satisfies the request schema.
+    sellerId: auth.userId || "00000000-0000-0000-0000-000000000000",
     version,
     entrypoint: "worker.js",
     format: "esm",
@@ -192,7 +193,7 @@ export async function deployCommand(args: DeployArgs): Promise<void> {
   // ── Step 6: Provision or reprovision ────────────────────────────────────
   if (config.deploymentId) {
     console.log("  [6/6] Reprovisioning existing deployment...");
-    const updated = await reprovisionDeployment(config.deploymentId, auth.userId || "");
+    const updated = await reprovisionDeployment(config.deploymentId);
 
     console.log(`       ✓ Deployment: ${updated.id}`);
     console.log();

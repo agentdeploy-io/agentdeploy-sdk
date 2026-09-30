@@ -98,7 +98,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
               fontWeight: 600,
               textTransform: "uppercase",
               letterSpacing: "0.06em",
-              color: "#71717A",
+              color: "var(--color-muted-foreground)",
             }}
           >
             {title ?? language}
@@ -113,20 +113,20 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
                 padding: "2px 8px",
                 borderRadius: RADIUS.sm,
                 backgroundColor: "transparent",
-                border: `1px solid #27272A`,
-                color: copied ? "#22C55E" : "#A1A1AA",
+                border: `1px solid var(--color-border)`,
+                color: copied ? "var(--color-success)" : "var(--color-muted-foreground)",
                 fontSize: "0.6875rem",
                 fontWeight: 500,
                 cursor: "pointer",
                 transition: "color 150ms ease, border-color 150ms ease",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = "#3F3F46";
-                e.currentTarget.style.color = copied ? "#22C55E" : "#FAFAFA";
+                e.currentTarget.style.borderColor = "var(--color-border-strong)";
+                e.currentTarget.style.color = copied ? "var(--color-success)" : "var(--color-foreground)";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = "#27272A";
-                e.currentTarget.style.color = copied ? "#22C55E" : "#A1A1AA";
+                e.currentTarget.style.borderColor = "var(--color-border)";
+                e.currentTarget.style.color = copied ? "var(--color-success)" : "var(--color-muted-foreground)";
               }}
             >
               {copied ? (

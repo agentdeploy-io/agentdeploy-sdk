@@ -1,0 +1,19 @@
+{
+  "name": "@agentdeploy/runtime-packaging",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-runtime packaging: generic supervisor shim + per-framework adapters so any agent framework (Hermes, n8n, Mastra, OpenHands, ...) satisfies the AgentDeploy Supervisor Protocol v1.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
+    "conformance": "tsx scripts/conformance.ts",
+    "build:hermes": "docker build -f dockerfiles/hermes.Dockerfile -t ghcr.io/agentdeploy/hermes-runtime:1.0 ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {}
+}

@@ -236,52 +236,56 @@ export type CardVariant = "default" | "metric" | "outline";
 // source of truth. The dark overrides in globals.css use literal hex
 // values because they are theme-specific.
 export const CSS_VARS = {
-  "--color-primary": "#2563EB",
-  "--color-primary-hover": "#1D4ED8",
-  "--color-primary-active": "#1E40AF",
-  "--color-primary-foreground": "#FFFFFF",
+  // Aligned to the marketplace canonical palette (agent-deploy/app/globals.css :root).
+  // Console token names (--color-*) carry the same HSL values as the marketplace's
+  // bare tokens (--primary, --background, …). Keep both sides in sync via
+  // plans/DESIGN_TOKENS.md.
+  "--color-primary": "hsl(216 76% 47%)",
+  "--color-primary-hover": "hsl(216 76% 42%)",
+  "--color-primary-active": "hsl(216 74% 36%)",
+  "--color-primary-foreground": "hsl(0 0% 100%)",
 
-  "--color-secondary": "#F4F4F5",
-  "--color-secondary-hover": "#E4E4E7",
-  "--color-secondary-active": "#D4D4D8",
-  "--color-secondary-foreground": "#09090B",
+  "--color-secondary": "hsl(220 24% 95%)",
+  "--color-secondary-hover": "hsl(220 23% 93%)",
+  "--color-secondary-active": "hsl(220 20% 90%)",
+  "--color-secondary-foreground": "hsl(222 20% 23%)",
 
-  "--color-destructive": "#DC2626",
-  "--color-destructive-hover": "#B91C1C",
-  "--color-destructive-active": "#991B1B",
-  "--color-destructive-foreground": "#FFFFFF",
+  "--color-destructive": "hsl(355 72% 50%)",
+  "--color-destructive-hover": "hsl(355 72% 44%)",
+  "--color-destructive-active": "hsl(355 72% 38%)",
+  "--color-destructive-foreground": "hsl(0 0% 100%)",
 
-  "--color-background": "#FFFFFF",
-  "--color-foreground": "#09090B",
+  "--color-background": "hsl(220 30% 98%)",
+  "--color-foreground": "hsl(222 32% 11%)",
 
-  "--color-card": "#FFFFFF",
-  "--color-card-hover": "#FAFAFA",
+  "--color-card": "hsl(0 0% 100%)",
+  "--color-card-hover": "hsl(220 23% 93%)",
 
-  "--color-border": "#E4E4E7",
-  "--color-border-strong": "#D4D4D8",
+  "--color-border": "hsl(220 17% 87%)",
+  "--color-border-strong": "hsl(220 14% 77%)",
 
-  "--color-muted": "#F4F4F5",
-  "--color-muted-foreground": "#71717A",
+  "--color-muted": "hsl(220 20% 93%)",
+  "--color-muted-foreground": "hsl(220 10% 38%)",
 
-  "--color-success": "#22C55E",
-  "--color-success-foreground": "#FFFFFF",
-  "--color-success-bg": "#F0FDF4",
-  "--color-success-border": "#BBF7D0",
+  "--color-success": "hsl(155 62% 36%)",
+  "--color-success-foreground": "hsl(0 0% 100%)",
+  "--color-success-bg": "hsl(155 62% 96%)",
+  "--color-success-border": "hsl(155 50% 86%)",
 
-  "--color-warning": "#F59E0B",
-  "--color-warning-foreground": "#FFFFFF",
-  "--color-warning-bg": "#FFFBEB",
-  "--color-warning-border": "#FDE68A",
+  "--color-warning": "hsl(36 88% 42%)",
+  "--color-warning-foreground": "hsl(30 54% 7%)",
+  "--color-warning-bg": "hsl(36 88% 96%)",
+  "--color-warning-border": "hsl(36 75% 84%)",
 
-  "--color-error": "#EF4444",
-  "--color-error-foreground": "#FFFFFF",
-  "--color-error-bg": "#FEF2F2",
-  "--color-error-border": "#FECACA",
+  "--color-error": "hsl(355 72% 50%)",
+  "--color-error-foreground": "hsl(0 0% 100%)",
+  "--color-error-bg": "hsl(355 72% 97%)",
+  "--color-error-border": "hsl(355 60% 89%)",
 
-  "--color-info": "#3B82F6",
-  "--color-info-foreground": "#FFFFFF",
-  "--color-info-bg": "#EFF6FF",
-  "--color-info-border": "#BFDBFE",
+  "--color-info": "hsl(199 78% 42%)",
+  "--color-info-foreground": "hsl(0 0% 100%)",
+  "--color-info-bg": "hsl(199 78% 96%)",
+  "--color-info-border": "hsl(199 65% 85%)",
 
   "--radius-sm": RADIUS.sm,
   "--radius-md": RADIUS.md,

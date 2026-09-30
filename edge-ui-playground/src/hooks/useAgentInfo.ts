@@ -56,7 +56,21 @@ export function useAgentInfo(agent: AgentRegistryEntry | null): UseAgentInfoResu
 
     const fetchInfo = async () => {
       try {
-        const url = `${window.location.origin}${API_CONFIG.healthPath(agent.port)}`;
+        // Dev mode: health check via the Vite proxy /health/{port}.
+        // Production: the wsPath carries the per-deployment console proxy
+        // prefix (/d/{id}) — probe the agent Worker's open /health endpoint
+        // through it (mirrors useAgentHealth).
+        let url: string;
+        if (import.meta.env.DEV) {
+          url = `${window.location.origin}${API_CONFIG.healthPath(agent.port)}`;
+        } else {
+          const prefix = agent.wsPath.split("/agents/")[0];
+          if (prefix && prefix.startsWith("/d/")) {
+            url = `${window.location.origin}${prefix}/health`;
+          } else {
+            url = `${window.location.origin}${API_CONFIG.healthPath(agent.port)}`;
+          }
+        }
         const response = await authFetch(url, {
           signal: AbortSignal.timeout(API_CONFIG.timeoutMs),
         });

@@ -85,6 +85,9 @@ export default createHandler(Monitor);
 
 ## MCP Integration
 
+`createChatAgent()` connects to configured MCP servers automatically and merges
+their tools with your local ones:
+
 ```typescript
 import { createChatAgent, createHandler } from "@agentdeploy-io/edge-sdk";
 
@@ -104,6 +107,25 @@ export const ResearchAgent = createChatAgent({
 });
 
 export default createHandler(ResearchAgent);
+```
+
+For manual control (e.g. inside a `createAgent()` lifecycle hook), use
+`connectMcp(agent, servers)` / `disconnectMcp(agent, name?)`:
+
+```typescript
+import { createAgent, createHandler, connectMcp } from "@agentdeploy-io/edge-sdk";
+
+export const Monitor = createAgent({
+  name: "monitor",
+  async onStart() {
+    const tools = await connectMcp(this, [
+      { transport: { type: "sse", url: "https://mcp.example.com/sse" } },
+    ]);
+    // tools — AI SDK tools you can pass to useGateway()/streamText()
+  },
+});
+
+export default createHandler(Monitor);
 ```
 
 ## Secret Access
@@ -155,12 +177,19 @@ Creates a general-purpose Durable Object agent.
 
 | Option | Type | Description |
 |---|---|---|
-| `name` | `string` | Agent name for routing |
-| `onStart` | `function` | Called on first invocation |
-| `onRequest` | `function` | HTTP request handler |
+| `name` | `string` | Agent name for routing (/agents/:name/:instance) |
+| `onStart` | `function` | Called on first invocation (or wake from hibernation) |
+| `onRequest` | `function` | HTTP request handler (non-WebSocket) |
+| `onConnect` | `function` | Called on WebSocket connection |
+| `onMessage` | `function` | Called on WebSocket message |
+| `onClose` | `function` | Called on WebSocket close |
 | `onSchedule` | `function` | Scheduled task handler |
-| `tools` | `Record<string, AgentDeployTool>` | Tools the agent can call |
+| `tools` | `Record<string, AgentDeployTool>` | Tools the agent can call via `this.callTool()` |
 | `mcpServers` | `McpServerConfig[]` | External tool servers |
+
+Inside lifecycle hooks you get `this.state`, `this.setState()`, `this.env`,
+`this.sql\`...\``, `this.schedule()`, `this.scheduleEvery()`,
+`this.getSchedules()`, `this.cancelSchedule()`, and `this.callTool()`.
 
 ### `createChatAgent(config)`
 Creates a chat agent with streaming, message persistence, and tool calling.
@@ -168,23 +197,60 @@ Creates a chat agent with streaming, message persistence, and tool calling.
 | Option | Type | Description |
 |---|---|---|
 | `name` | `string` | Agent name for routing |
-| `systemPrompt` | `string \| function` | System prompt |
+| `systemPrompt` | `string \| function` | System prompt (function receives `AgentContext`) |
 | `model` | `string?` | Model hint (platform may override) |
 | `tools` | `Record<string, AgentDeployTool>` | Available tools |
 | `mcpServers` | `McpServerConfig[]` | External tool servers |
 | `maxSteps` | `number?` | Max tool-call rounds (default: 10) |
+| `temperature` | `number?` | Sampling temperature (provider default if omitted) |
+| `maxTokens` | `number?` | Max completion tokens (provider default if omitted) |
+| `onBeforeChat` | `function?` | Called before each chat message is processed |
+| `onAfterChat` | `function?` | Called after chat completes with token usage |
 
 ### `defineTool(def)`
-Defines a typed tool with Zod schema validation.
+Defines a typed tool with Zod schema validation and telemetry.
 
-### `useGateway(modelName?)`
-Returns an AI SDK model that routes through AgentDeploy's gateway.
+```typescript
+const tool = defineTool({
+  description: "Tool description",
+  inputSchema: z.object({ /* ... */ }),
+  needsApproval: false, // set true to require approval before execution
+  execute: async (input, ctx) => { /* ... */ },
+});
+```
+
+### `useGateway(modelName?, env?)`
+Returns an AI SDK model that routes through AgentDeploy's gateway. Used
+internally by `createChatAgent()`; useful for direct LLM access in scheduled
+agents or custom tools.
+
+### `gatewayUrl()`
+Returns the raw gateway base URL for custom `fetch` calls.
+
+### `gatewayHeaders()`
+Returns the deployment headers (`X-AD-Deployment`) for manual gateway calls.
 
 ### `useSecrets<T>(env)`
-Typed access to deployment secrets.
+Typed access to deployment secrets. Throws a descriptive error when a required
+secret is missing (in local dev it warns instead, so you can iterate without
+setting up `.dev.vars`).
+
+### `hasSecret(env, key)`
+Checks whether a secret is configured without throwing.
+
+### `getSecret(env, key, fallback?)`
+Gets a secret value, returning a fallback when it's not configured.
+
+### `connectMcp(agent, servers)`
+Connects to MCP servers and returns their tools merged as AI SDK tools.
+`createChatAgent()` calls this automatically when `mcpServers` is set.
+
+### `disconnectMcp(agent, name?)`
+Disconnects from MCP servers (all, or one by name).
 
 ### `createHandler(...agentClasses)`
-Creates the worker fetch handler with agent routing and health checks.
+Creates the worker fetch handler with agent routing, `/health` and `/info`
+endpoints, CORS handling, and a 404 response for unknown routes.
 
 ## How It Works
 

@@ -15,6 +15,8 @@ export type ViewId =
   | "agent-detail"
   | "conversations"
   | "workers"
+  | "core"
+  | "core-detail"
   | "config"
   | "observability"
   | "settings"

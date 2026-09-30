@@ -3,7 +3,9 @@
 // with AgentDeploy gateway routing, billing, and telemetry.
 
 import { AIChatAgent } from "@cloudflare/ai-chat";
+import type { OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { streamText, createUIMessageStream, createUIMessageStreamResponse, convertToModelMessages, stepCountIs } from "ai";
+import type { StreamTextOnFinishCallback, ToolSet } from "ai";
 import type {
   ChatAgentConfig,
   AgentContext,
@@ -52,7 +54,9 @@ function reportTrackedUsage(
   recordTelemetry("chat.usage_reported", { ...usageReport, aborted: tracker.completionTokens > 0 && !tracker.reported });
 
   if (config.onAfterChat) {
-    config.onAfterChat(ctx, usageReport).catch(() => {
+    // onAfterChat may be sync (void) or async — normalize to a Promise so we
+    // can attach a catch handler without letting hook errors crash the stream
+    Promise.resolve(config.onAfterChat(ctx, usageReport)).catch(() => {
       // Don't let after-chat hooks crash the stream
     });
   }
@@ -94,7 +98,12 @@ export function createChatAgent(config: ChatAgentConfig) {
   const agentConfig = config;
   const agentTools: Record<string, AgentDeployTool<any, any>> = config.tools ?? {};
 
-  class AgentDeployChatAgentImpl extends AIChatAgent implements AgentDeployChatAgent {
+  // NOTE: `implements AgentDeployChatAgent` is intentionally omitted — the
+  // upstream `AIChatAgent` base types `messages` as `UIMessage[]` and
+  // `onChatMessage` with `StreamTextOnFinishCallback<ToolSet>`, which are not
+  // structurally identical to the convenience shapes on the public interface.
+  // The factory's return cast below exposes the public interface to users.
+  class AgentDeployChatAgentImpl extends AIChatAgent {
     static agentName = agentConfig.name;
     static agentConfig = agentConfig;
 
@@ -143,9 +152,9 @@ export function createChatAgent(config: ChatAgentConfig) {
     // ── Chat Handler ──────────────────────────────────────────────────────
 
     async onChatMessage(
-      onFinish: (result: unknown) => void | Promise<void>,
-      _options?: unknown,
-    ): Promise<Response> {
+      onFinish: StreamTextOnFinishCallback<ToolSet>,
+      _options?: OnChatMessageOptions,
+    ): Promise<Response | undefined> {
       recordTelemetry("chat.message", { agent: agentConfig.name });
 
       // Pre-chat hook
@@ -158,7 +167,7 @@ export function createChatAgent(config: ChatAgentConfig) {
       const tracker = createUsageTracker();
 
       // Build tool set: local tools + MCP tools
-      const localTools: Record<string, unknown> = {};
+      const localTools: ToolSet = {};
       for (const [name, tool] of Object.entries(agentTools)) {
         // Wrap in AI SDK tool format
         localTools[name] = {
@@ -178,14 +187,14 @@ export function createChatAgent(config: ChatAgentConfig) {
       }
 
       // Connect MCP servers for additional tools
-      let allTools = { ...localTools };
+      let allTools: ToolSet = { ...localTools };
       if (agentConfig.mcpServers?.length) {
         try {
           const mcpTools = await connectMcp(
             this as unknown as AgentDeployChatAgent,
             agentConfig.mcpServers,
           );
-          allTools = { ...allTools, ...mcpTools };
+          allTools = { ...allTools, ...(mcpTools as ToolSet) };
         } catch (error) {
           recordTelemetry("chat.mcp_error", {
             error: error instanceof Error ? error.message : String(error),
@@ -216,10 +225,11 @@ export function createChatAgent(config: ChatAgentConfig) {
             model,
             system: systemPrompt,
             messages: modelMessages,
-            tools: allTools as Record<string, unknown>,
+            tools: allTools,
             stopWhen: stepCountIs(agentConfig.maxSteps ?? 10),
             temperature: agentConfig.temperature,
-            maxTokens: agentConfig.maxTokens,
+            // AI SDK v6 renamed `maxTokens` to `maxOutputTokens`
+            maxOutputTokens: agentConfig.maxTokens,
             // Track usage incrementally via onChunk — ensures we capture
             // partial usage even if the stream is aborted by the client
             onChunk: ({ chunk }: { chunk: { type?: string; usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } } }) => {
@@ -241,13 +251,21 @@ export function createChatAgent(config: ChatAgentConfig) {
               });
               reportTrackedUsage(tracker, ctx, agentConfig);
             },
-            onFinish: async (result: {
-              usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
-            }) => {
-              // Normal completion — update tracker with final usage
-              const usage = result.usage ?? {};
-              tracker.promptTokens = usage.promptTokens ?? tracker.promptTokens;
-              tracker.completionTokens = usage.completionTokens ?? tracker.completionTokens;
+            onFinish: async (result) => {
+              // Normal completion — update tracker with final usage.
+              // AI SDK v6 types usage as LanguageModelUsage (inputTokens/
+              // outputTokens); widen it so the legacy promptTokens/
+              // completionTokens fields (still sent by some providers)
+              // remain readable.
+              const usage = (result.usage ?? {}) as {
+                promptTokens?: number;
+                completionTokens?: number;
+                totalTokens?: number;
+                inputTokens?: number;
+                outputTokens?: number;
+              };
+              tracker.promptTokens = usage.promptTokens ?? usage.inputTokens ?? tracker.promptTokens;
+              tracker.completionTokens = usage.completionTokens ?? usage.outputTokens ?? tracker.completionTokens;
               tracker.totalTokens = usage.totalTokens ?? tracker.totalTokens;
 
               // Report usage (idempotent — safe even if onError already fired)
@@ -263,16 +281,20 @@ export function createChatAgent(config: ChatAgentConfig) {
           });
           writer.merge(result.toUIMessageStream());
         },
-        onError: (error: { error?: unknown }) => {
+        onError: (error: unknown) => {
           // Top-level stream error (e.g., client disconnect) — report partial usage
+          const err = (error as { error?: unknown })?.error;
           recordTelemetry("chat.aborted", {
-            error: error?.error instanceof Error ? error.error.message : "stream aborted",
+            error: err instanceof Error ? err.message : "stream aborted",
             partialUsage: {
               tokensIn: tracker.promptTokens,
               tokensOut: tracker.completionTokens,
             },
           });
           reportTrackedUsage(tracker, ctx, agentConfig);
+          // The stream writer expects the onError hook to return the error
+          // message that is surfaced to the client.
+          return "stream aborted";
         },
       });
 

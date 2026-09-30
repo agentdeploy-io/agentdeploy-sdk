@@ -1,0 +1,46 @@
+{
+  "name": "@agentdeploy-io/core-sdk",
+  "version": "0.1.0",
+  "description": "Build long-running AI agents on Fly.io VMs with AgentDeploy billing, telemetry, and supervisor integration.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsc --watch"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "agentdeploy",
+    "fly.io",
+    "ai-agents",
+    "long-running",
+    "supervisor-protocol",
+    "vm"
+  ],
+  "dependencies": {
+    "better-sqlite3": "^11.6.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

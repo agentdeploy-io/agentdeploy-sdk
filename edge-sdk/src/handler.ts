@@ -2,6 +2,8 @@
 // Creates the default export handler that routes to agents.
 
 import { routeAgentRequest } from "@agentdeploy-io/agents";
+import { readLogBuffer, recordRequest } from "./log-buffer.js";
+import { runtimeErrorResponse } from "./runtime-error.js";
 import type { AgentHandler, AgentDeployAgent } from "./types.js";
 
 /**
@@ -37,7 +39,7 @@ const CORS_HEADERS: Record<string, string> = {
  */
 function withCors(response: Response): Response {
   // WebSocket upgrades (101 Switching Protocols) cannot be reconstructed
-  if (response.status === 101 || response.websocket) {
+  if (response.status === 101 || response.webSocket) {
     for (const [key, value] of Object.entries(CORS_HEADERS)) {
       response.headers.set(key, value);
     }
@@ -93,19 +95,10 @@ export function createHandler(
     );
   }
 
-  return {
-    async fetch(
-      request: Request,
-      env: Record<string, unknown>,
-    ): Promise<Response> {
-      // Handle CORS preflight immediately
-      if (request.method === "OPTIONS") {
-        return new Response(null, {
-          status: 204,
-          headers: CORS_HEADERS,
-        });
-      }
-
+  const handleRequest = async (
+    request: Request,
+    env: Record<string, unknown>,
+  ): Promise<Response> => {
       // Route to agents first (this handles /agents/:name/:instance)
       // WebSocket upgrade responses MUST be returned untouched — any
       // modification (even header mutation) invalidates the WebSocket pair.
@@ -116,7 +109,7 @@ export function createHandler(
       if (agentResponse) {
         // Return WebSocket upgrades untouched — CORS is handled by the
         // Vite dev proxy (same-origin) in dev and the platform proxy in prod.
-        if (agentResponse.status === 101 || agentResponse.websocket) {
+        if (agentResponse.status === 101 || agentResponse.webSocket) {
           return agentResponse;
         }
         return withCors(agentResponse);
@@ -133,7 +126,7 @@ export function createHandler(
               templateId: AD_TEMPLATE_ID,
               model: AD_MODEL,
               agents: registeredAgentNames,
-              version: "0.1.0",
+              version: "0.1.1",
             }),
             {
               status: 200,
@@ -141,6 +134,28 @@ export function createHandler(
                 "Content-Type": "application/json",
                 "X-AD-Deployment": AD_DEPLOYMENT_ID,
               },
+            },
+          ),
+        );
+      }
+
+      // Log tail endpoint (pulled by the AgentDeploy platform during
+      // health probes; entries are persisted into edge_deployment_logs).
+      if (url.pathname === "/_logs") {
+        const { seq, logs } = readLogBuffer();
+        return withCors(
+          new Response(
+            JSON.stringify({
+              deploymentId:
+                typeof AD_DEPLOYMENT_ID !== "undefined"
+                  ? AD_DEPLOYMENT_ID
+                  : undefined,
+              seq,
+              logs,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
             },
           ),
         );
@@ -176,7 +191,7 @@ export function createHandler(
           JSON.stringify({
             error: "Not found",
             path: url.pathname,
-            hint: `Try /agents/${registeredAgentNames[0] ?? "unknown"} or /health`,
+            hint: `Open / for the agent console, /info for the agent map, or /health`,
           }),
           {
             status: 404,
@@ -187,6 +202,38 @@ export function createHandler(
           },
         ),
       );
+  };
+
+  return {
+    async fetch(
+      request: Request,
+      env: Record<string, unknown>,
+    ): Promise<Response> {
+      // Handle CORS preflight immediately
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: CORS_HEADERS,
+        });
+      }
+
+      const startedAt = Date.now();
+      let response: Response;
+      try {
+        response = await handleRequest(request, env);
+      } catch (err) {
+        // Never leak stack traces to the customer: structured JSON with a
+        // customer-facing message; the full error is logged for developers.
+        response = runtimeErrorResponse(err, AD_DEPLOYMENT_ID);
+      }
+
+      // Record every real request except the platform's own pull endpoints
+      // (health polling + log tail) so they cannot crowd out user traffic.
+      const pathname = new URL(request.url).pathname;
+      if (pathname !== "/health" && pathname !== "/_logs") {
+        recordRequest(request.method, pathname, response.status, Date.now() - startedAt);
+      }
+      return response;
     },
   };
 }

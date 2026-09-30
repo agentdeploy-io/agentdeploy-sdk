@@ -76,12 +76,20 @@ export const NAV_GROUPS: NavGroupConfig[] = [
         order: 3,
       },
       {
+        id: "core",
+        label: "Core VMs",
+        icon: "server",
+        path: "/core",
+        visible: true,
+        order: 4,
+      },
+      {
         id: "config",
         label: "Configuration",
         icon: "settings-2",
         path: "/config",
         visible: true,
-        order: 4,
+        order: 5,
       },
       {
         id: "observability",
@@ -89,7 +97,7 @@ export const NAV_GROUPS: NavGroupConfig[] = [
         icon: "activity",
         path: "/observability",
         visible: true,
-        order: 5,
+        order: 6,
       },
     ],
   },
@@ -137,6 +145,23 @@ export const AGENT_TABS: AgentTabConfig[] = [
   { id: "logs", label: "Logs", icon: "scroll-text", order: 5 },
   { id: "traces", label: "Traces", icon: "git-branch", order: 6 },
   { id: "versions", label: "Versions", icon: "git-commit", order: 7 },
+];
+
+// ─── Core (Fly.io VM) Detail Sub-Tabs ────────────────────────────
+
+export interface CoreTabConfig {
+  id: string;
+  label: string;
+  icon: string;
+  order: number;
+}
+
+export const CORE_TABS: CoreTabConfig[] = [
+  { id: "controls", label: "Controls", icon: "sliders", order: 0 },
+  { id: "cost", label: "Cost & Budget", icon: "dollar-sign", order: 1 },
+  { id: "tasks", label: "Tasks", icon: "list-checks", order: 2 },
+  { id: "events", label: "Events", icon: "activity", order: 3 },
+  { id: "hitl", label: "Approvals", icon: "inbox", order: 4 },
 ];
 
 // ─── Environment Switcher ────────────────────────────────────────
