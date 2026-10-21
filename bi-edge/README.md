@@ -151,3 +151,17 @@ export; **Approval Inbox** = approved-for-review pitches; approve/reject inline.
 **Testing data note:** any `*.example` addresses in the Data screen are
 test/demo rows (CSV test imports or `node scripts/seed-engine.mjs`), not scraped
 data. Delete with `POST /cmd/supervisor {"message":"/erase <key>"}`.
+
+---
+
+## 6. Known gaps (audited 2026-10-21)
+
+| # | Gap | Status |
+|---|-----|--------|
+| G1 | CSV import UI↔engine protocol mismatch | **Fixed** (multipart + raw body) |
+| G2 | Approving a lead does NOT send it — `/send` is a separate supervisor command; UI has no per-row Send button | By design (HITL), but needs a UI action |
+| G3 | **Approved reply drafts are never sent.** `/send-reply <id>` and the UI reply-approve only mark status; no code path sends the draft via Brevo. UI reply-approve patches the LEAD row (`{status:"approved"}`), not the draft (`replies_log.draft_status`) | **Real gap** — reply loop ends at "draft pending" |
+| G4 | `reply-poll` cron uses Brevo `/v3/inbound/events` which returns **metadata only (no email body)** → intent classified blind. The body-carrying path is the Brevo **webhook** → `POST /inbound-webhook` (exists, deduped via `inbound_seen`), but no Brevo-side webhook is configured | **Real gap** — configure Brevo inbound webhook in prod |
+| G5 | No UI controls for: send settings (`/cmd/settings`), crawl/research triggers (`/_cron/*`), sent log (`/sent`). Hooks exist (`useSettings`, `useSchedules`) but no page renders them | UI work |
+| G6 | Brain `send-external-email` tool is a stub | Deferred |
+| G7 | JEV classifier parked (LLM fallback active); verify step is strict (registry name/reg-number must appear on the website) so generic crawl batches often verify 0 | Intentional design |

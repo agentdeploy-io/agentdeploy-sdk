@@ -139,7 +139,7 @@ export class BiEdgeAgent {
 
   private getDb(): CfSqlDatabase {
     if (!this.db) {
-      this.db = new CfSqlDatabase(this.state.storage.sql);
+      this.db = new CfSqlDatabase(this.state.storage.sql, (callback) => this.state.storage.transactionSync(callback));
       runMigrations(this.db as any);
     }
     return this.db;
