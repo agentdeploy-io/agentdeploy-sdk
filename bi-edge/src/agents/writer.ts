@@ -22,7 +22,7 @@ export interface WriterOutput {
   pitch_body: string;
 }
 
-const IDENTITY_PERSONA = `You are writing on behalf of a business automation consultancy that sells AI agents for:
+const IDENTITY_PERSONA_DEFAULT = `You are writing on behalf of a business automation consultancy that sells AI agents for:
 - Intake and lead handling (phone/email)
 - Quoting and proposals
 - Scheduling and appointments
@@ -31,12 +31,28 @@ const IDENTITY_PERSONA = `You are writing on behalf of a business automation con
 
 Voice: direct, conversational, professional. No jargon. Short sentences. First person.`;
 
-const WRITER_SYSTEM = `${IDENTITY_PERSONA}
+// Brand-aware persona: when BRAND_NAME / BRAND_SITE_URL / BRAND_ONE_LINER are
+// set (e.g. "Agent Miles" built by gradient3.io), pitches are written in first
+// person as that agent and open by identifying themselves + the one-liner.
+function buildIdentityPersona(env: Record<string, unknown>): string {
+  const brandName = String(env.BRAND_NAME ?? "").trim();
+  const oneLiner = String(env.BRAND_ONE_LINER ?? "").trim();
+  const site = String(env.BRAND_SITE_URL ?? "").replace(/^https?:\/\//, "").replace(/\/.*$/, "").trim();
+  if (!brandName) return IDENTITY_PERSONA_DEFAULT;
 
+  return `You are ${brandName}${site ? `, an AI agent built by ${site}` : ""}.
+${oneLiner ? `About the company: ${oneLiner}` : ""}
+You sell AI agents for: intake and lead handling (phone/email), quoting and proposals, scheduling and appointments, document processing, and follow-up automation.
+
+Voice: direct, conversational, professional. No jargon. Short sentences. First person — always as ${brandName}. Never claim to be a human.`;
+}
+
+const WRITER_TASK = `
 You analyze a business's evidence pack (services, tech stack, team size, client references) and recommend which AI agents they need most. For each recommendation, cite which evidence field supports it.
 
 Then write a cold email pitch (subject + body, 80-120 words) that:
-- Opens with a specific observation about their business
+- Opens with ONE self-identification sentence: who you are${' '}(${`{agent name}, an AI agent built by {site}`}) and what the company builds (use the one-liner, lightly adapted)
+- Then gives a specific observation about their business
 - Names ONE AI agent that solves their biggest pain
 - Proposes a 15-minute call
 - Ends with a soft CTA
@@ -58,6 +74,12 @@ export async function runWriter(
   evidence: EvidencePack,
   env: Record<string, unknown>,
 ): Promise<WriterOutput> {
+  const brand = {
+    name: String(env.BRAND_NAME ?? "").trim(),
+    site: String(env.BRAND_SITE_URL ?? "").replace(/^https?:\/\//, "").replace(/\/.*$/, "").trim(),
+    one_liner: String(env.BRAND_ONE_LINER ?? "").trim(),
+  };
+  const system = `${buildIdentityPersona(env)}${WRITER_TASK}`;
   const res = await gatewayFetchWithBackoff("/v1/chat/completions", {
     method: "POST",
     headers: gatewayHeaders(env),
@@ -67,10 +89,11 @@ export async function runWriter(
       max_tokens: 4096,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: WRITER_SYSTEM },
+        { role: "system", content: system },
         {
           role: "user",
           content: JSON.stringify({
+            brand,
             business: {
               name: lead.name,
               country: lead.country,

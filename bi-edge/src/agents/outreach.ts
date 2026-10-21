@@ -182,10 +182,17 @@ export function runGateStack(
     }
 
     html += '<div style="margin-top:22px;border-top:1px solid #e5e7eb;padding-top:14px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#4b5563;line-height:1.6">';
+    const logo = String(env.BRAND_LOGO_URL ?? "");
+    if (logo) {
+      html += `<img src="${escH(logo)}" alt="${escH(brandName)}" style="height:32px;display:block;margin-bottom:10px"><br>`;
+    }
     if (brandName) {
       html += `<span style="font-size:14px;font-weight:600;color:#111827">${escH(brandName)}</span><br>`;
     }
-    html += "AI outreach agent<br>";
+    const brandDomain = brandSite.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    html += brandDomain
+      ? `AI outreach agent built by ${escH(brandDomain)}<br>`
+      : "AI outreach agent<br>";
     const links: string[] = [];
     if (brandSite) {
       links.push(`<a href="${escH(brandSite)}" style="color:#2563eb;text-decoration:none">${escH(brandSite.replace(/^https?:\/\//, ""))}</a>`);

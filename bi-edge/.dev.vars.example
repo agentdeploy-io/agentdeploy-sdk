@@ -1,13 +1,45 @@
 # Copy to .dev.vars for local `wrangler dev`. Safe placeholder values only.
+# Loaded automatically by `wrangler dev` (git-ignored — never commit real keys).
+# Full explanation of every var + the pipeline: see packages/bi-edge/README.md
+
+# ── Identity (platform) ────────────────────────────────────────────────────
 AD_DEPLOYMENT_ID=dev-local
 AD_USER_ID=dev
+# Auth token Core→Edge sync uses (X-AD-Sync header). Must match bi-core's SYNC_SECRET.
 AD_SYNC_SECRET=dev-sync-secret
-AD_GATEWAY_BASE_URL=http://127.0.0.1:8794/v1
-AD_GATEWAY_API_KEY=dev-key
+
+# ── LLM gateway (writer / classify / reply agents) ─────────────────────────
+# OpenAI-compatible. SDK appends "/v1/chat/completions" → base URL must NOT end in /v1.
+# Local mock: http://127.0.0.1:8794  ·  Chutes: https://llm.chutes.ai
+AD_GATEWAY_BASE_URL=https://llm.chutes.ai
+AD_GATEWAY_API_KEY=
+# Must be a NON-reasoning model (reasoning models return content in reasoning_content).
+AD_MODEL=deepseek-ai/DeepSeek-V3.2-TEE
+
+# ── Lead discovery (crawl cron → bi-core) ──────────────────────────────────
+# bi-core URL. Local: run `cd packages/bi-core && npm run build && npm start` (:4111).
+CORE_URL=http://127.0.0.1:4111
+# UK Companies House API key (bi-core uses it; also checked by scripts/verify-bi-agent.ts)
+COMPANIES_HOUSE_KEY=
+# Brave Search API (website discovery + researcher enrichment). Free: 2,000 queries/mo.
+BRAVE_API_KEY=
 AD_EDGE_CALLBACK_URL=http://127.0.0.1:8792
 
-# Leave EMPTY locally unless you intentionally want real email delivery
-# (also requires POST /cmd/settings {"sendEnabled":"true","dryRun":"false"}).
+# ── Branding (email footer + writer persona) ───────────────────────────────
+# Persona name shown in the footer + used as the Brevo sender name.
+BRAND_NAME=Agent Miles
+# One sentence about what the company builds — the writer uses it in every pitch.
+BRAND_ONE_LINER=We build AI into the systems your business runs on - products, agents and secure automations, from first workflow map to production
+# Public site URL — rendered as a link in the footer ("AI outreach agent built by <domain>").
+BRAND_SITE_URL=https://gradient3.io
+# Public HTTPS logo image for the footer (optional but recommended).
+BRAND_LOGO_URL=
+# Optional booking link → rendered as "book a call" in the footer.
+CALENDLY_URL=
+
+# ── Brevo (real sending) ───────────────────────────────────────────────────
+# Leave EMPTY locally unless you intentionally want real email delivery.
+# Also requires: sender domain authenticated in Brevo (SPF/DKIM) AND
+# POST /cmd/settings {"sendEnabled":"true","dryRun":"false"} (dailyCap default 10).
 BREVO_API_KEY=
 BREVO_SENDER_EMAIL=
-BRAND_NAME=Calla Dev
