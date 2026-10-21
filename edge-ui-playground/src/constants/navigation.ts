@@ -61,6 +61,14 @@ export const NAV_GROUPS: NavGroupConfig[] = [
         visible: true,
         order: 2,
       },
+      {
+        id: "agent-wire",
+        label: "Agent Wire",
+        icon: "network",
+        path: "/agent-wire",
+        visible: true,
+        order: 3,
+      },
     ],
   },
   {
@@ -98,6 +106,52 @@ export const NAV_GROUPS: NavGroupConfig[] = [
         path: "/observability",
         visible: true,
         order: 6,
+      },
+      {
+        id: "data-studio",
+        label: "Data Studio",
+        icon: "database",
+        path: "/data-studio",
+        visible: true,
+        order: 7,
+      },
+      {
+        id: "pipeline",
+        label: "Pipeline",
+        icon: "git-branch",
+        path: "/pipeline",
+        visible: true,
+        order: 8,
+      },
+      {
+        id: "hitl",
+        label: "HITL Center",
+        icon: "inbox",
+        path: "/hitl",
+        visible: true,
+        order: 9,
+      },
+      {
+        id: "schedule-manager",
+        label: "Schedule Manager",
+        icon: "clock",
+        path: "/schedule-manager",
+        visible: true,
+        order: 10,
+      },
+    ],
+  },
+  {
+    id: "configure",
+    label: "Configure",
+    items: [
+      {
+        id: "secrets-config",
+        label: "Secrets & Config",
+        icon: "shield-check",
+        path: "/secrets-config",
+        visible: true,
+        order: 0,
       },
     ],
   },
@@ -145,6 +199,7 @@ export const AGENT_TABS: AgentTabConfig[] = [
   { id: "logs", label: "Logs", icon: "scroll-text", order: 5 },
   { id: "traces", label: "Traces", icon: "git-branch", order: 6 },
   { id: "versions", label: "Versions", icon: "git-commit", order: 7 },
+  { id: "review", label: "Review", icon: "list-checks", order: 8 },
 ];
 
 // ─── Core (Fly.io VM) Detail Sub-Tabs ────────────────────────────

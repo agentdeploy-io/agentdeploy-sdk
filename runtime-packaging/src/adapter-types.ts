@@ -28,6 +28,11 @@ export type TaskState =
   | "cancelled"
   | "expired";
 
+export interface TaskBudget {
+  vmMinutes?: number;
+  tokens?: number;
+}
+
 export interface AdapterTaskPayload {
   taskId: string;
   taskType: string;
@@ -35,6 +40,10 @@ export interface AdapterTaskPayload {
   input: Record<string, unknown>;
   /** Decrypted secrets from the broker, memory-only. */
   secrets: Record<string, string>;
+  /** Resource budget for this task. */
+  budget?: TaskBudget;
+  /** Maximum wall-clock seconds the task may run. */
+  maxRuntimeSec?: number;
 }
 
 export interface TaskOutcome {

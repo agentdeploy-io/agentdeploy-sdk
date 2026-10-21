@@ -43,3 +43,6 @@ export type { DropdownProps, DropdownItemProps } from "./Dropdown";
 
 export { CodeBlock } from "./CodeBlock";
 export type { CodeBlockProps } from "./CodeBlock";
+
+export { TierBadge } from "./TierBadge";
+export type { TierBadgeProps } from "./TierBadge";

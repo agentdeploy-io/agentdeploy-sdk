@@ -1,39 +1,27 @@
 // ── ad logs ──────────────────────────────────────────────────────────────────
 //
-// Fetches logs from the deployment's health endpoint. For real-time logs,
-// sellers can use `wrangler tail` directly.
+// Fetches worker logs from the platform log endpoint
+// (GET /cli/deployments/:id/logs), which queries Cloudflare Workers
+// Observability with the platform token — no end-user Cloudflare
+// credentials or wrangler required. `--follow` polls the endpoint.
 
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { loadProjectConfig, findProjectRoot, requireAuth } from "../config.js";
-import { getDeployment } from "../api-client.js";
+import { loadProjectConfig, findProjectRoot } from "../config.js";
+import { getDeploymentLogs, type WorkerLogEntry } from "../api-client.js";
 
 export interface LogsArgs {
-  /** Follow logs (wrangler tail) */
+  /** Follow logs (poll the platform log endpoint) */
   follow?: boolean;
+  /** Max entries per fetch (one-shot mode) */
+  limit?: number;
 }
 
-/**
- * Check if wrangler is installed locally or declared in package.json.
- */
-function checkWrangler(projectRoot: string): boolean {
-  const localWrangler = join(projectRoot, "node_modules", ".bin", "wrangler");
-  if (existsSync(localWrangler)) return true;
+const FOLLOW_POLL_MS = 3000;
+const FOLLOW_WINDOW_MS = 10_000;
 
-  const pkgPath = join(projectRoot, "package.json");
-  if (existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-      if (pkg.devDependencies?.wrangler || pkg.dependencies?.wrangler) {
-        return true;
-      }
-    } catch {
-      // Ignore parse errors
-    }
-  }
-
-  return false;
+function formatEntry(entry: WorkerLogEntry): string {
+  const ts = entry.timestamp.replace(/\.\d+Z$/, "Z");
+  const level = entry.level.toUpperCase().padEnd(5);
+  return `${ts} ${level} ${entry.message}`;
 }
 
 export async function logsCommand(args: LogsArgs): Promise<void> {
@@ -51,52 +39,51 @@ export async function logsCommand(args: LogsArgs): Promise<void> {
   }
 
   if (args.follow) {
-    // Check wrangler is available before spawning tail
-    if (!checkWrangler(projectRoot)) {
-      console.error("wrangler is not installed in this project.");
-      console.error("Live logs require wrangler. Install it with:");
-      console.error("  npm install -D wrangler");
-      console.error();
-      process.exit(1);
-    }
-
-    // Use wrangler tail for live logs
-    console.log("  Starting wrangler tail (live logs)...");
+    console.log("  Following deployment logs (Ctrl+C to stop)...");
     console.log();
+    let since = Date.now() - FOLLOW_WINDOW_MS;
+    // Print an initial window so users see recent context immediately.
+    const initial = await getDeploymentLogs(config.deploymentId, { limit: 20 });
+    for (const entry of initial.logs) console.log(formatEntry(entry));
+    if (initial.note) console.log(`  -- ${initial.note}`);
 
-    const child = spawn(
-      "npx",
-      ["wrangler", "tail", config.projectId, "--format", "json"],
-      {
-        cwd: projectRoot,
-        stdio: "inherit",
-        shell: true,
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, FOLLOW_POLL_MS));
+      let logs: WorkerLogEntry[];
+      try {
+        const result = await getDeploymentLogs(config.deploymentId, {
+          limit: 50,
+          since,
+        });
+        logs = result.logs;
+      } catch {
+        continue; // transient network error — keep following
       }
-    );
-
-    child.on("error", (err) => {
-      console.error(`Failed to start wrangler tail: ${err.message}`);
-      process.exit(1);
-    });
-
-    child.on("exit", (code) => {
-      process.exit(code ?? 0);
-    });
-    return;
+      for (const entry of logs) console.log(formatEntry(entry));
+      since = Date.now() - FOLLOW_WINDOW_MS;
+    }
   }
 
-  // One-shot: fetch deployment health/status
-  const auth = requireAuth();
-  console.log("  Fetching deployment status...");
+  // One-shot: fetch recent worker logs (default: last hour)
+  console.log("  Fetching deployment logs...");
   console.log();
 
   try {
-    const deployment = await getDeployment(config.deploymentId, auth.userId || "");
-    console.log(JSON.stringify(deployment, null, 2));
-  } catch (err) {
-    console.error(`  ✗ ${(err as Error).message}`);
+    const result = await getDeploymentLogs(config.deploymentId, {
+      limit: args.limit ?? 50,
+    });
+    if (result.logs.length === 0) {
+      console.log("  No logs found in the last hour.");
+      if (result.note) console.log(`  Note: ${result.note}`);
+      else console.log("  (Workers must have observability enabled to emit logs.)");
+    } else {
+      for (const entry of result.logs) console.log(formatEntry(entry));
+    }
     console.log();
     console.log("  For live logs, try: ad logs --follow");
+  } catch (err) {
+    console.error(`  ✗ ${(err as Error).message}`);
     process.exit(1);
   }
 }

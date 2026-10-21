@@ -51,3 +51,20 @@ export type { CoreControlsViewProps } from "./CoreControlsView";
 
 export { CoreEventsView } from "./CoreEventsView";
 export type { CoreEventsViewProps } from "./CoreEventsView";
+
+export { DataStudioView } from "./DataStudioView";
+export type { DataStudioViewProps } from "./DataStudioView";
+
+export { PipelineView } from "./PipelineView";
+export type { PipelineViewProps } from "./PipelineView";
+
+export { HITLView } from "./HITLView";
+export type { HITLViewProps } from "./HITLView";
+
+export { ScheduleManagerView } from "./ScheduleManagerView";
+export type { ScheduleManagerViewProps } from "./ScheduleManagerView";
+
+export { AgentWireView } from "./AgentWireView";
+
+export { SecretsConfigView } from "./SecretsConfigView";
+export type { SecretsConfigViewProps } from "./SecretsConfigView";

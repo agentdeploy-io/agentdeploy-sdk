@@ -22,6 +22,8 @@ import { deployCommand } from "./commands/deploy.js";
 import { secretsCommand } from "./commands/secrets.js";
 import { generateCommand } from "./commands/generate.js";
 import { logsCommand } from "./commands/logs.js";
+import { whoami, listTemplates, listMyDeployments, yankEdgeVersion } from "./api-client.js";
+import { getApiUrl } from "./config.js";
 
 // ── ANSI colors ──────────────────────────────────────────────────────────────
 
@@ -59,6 +61,15 @@ ${BOLD}COMMANDS${RESET}
   ${GREEN}logout${RESET}     Remove saved credentials
               ad logout
 
+  ${GREEN}whoami${RESET}     Show the authenticated user
+              ad whoami
+
+  ${GREEN}templates${RESET}  List your marketplace templates
+              ad templates
+
+  ${GREEN}deployments${RESET} List your deployments
+              ad deployments
+
   ${GREEN}dev${RESET}        Run the agent locally (wraps wrangler dev)
               ad dev [--port 8787] [--remote]
 
@@ -70,6 +81,7 @@ ${BOLD}COMMANDS${RESET}
               ad secrets set <KEY> [value]
               ad secrets list
               ad secrets required
+              ad secrets remove <KEY> [--force]
 
   ${GREEN}generate${RESET}   Scaffold new files
               ad generate tool <name>     Create src/tools.<name>.ts
@@ -78,6 +90,9 @@ ${BOLD}COMMANDS${RESET}
 
   ${GREEN}logs${RESET}       View deployment logs
               ad logs [--follow]
+
+  ${GREEN}yank${RESET}       Unpublish a template version (rollback)
+              ad yank <version-id>
 
   ${GREEN}version${RESET}    Show CLI version
               ad version
@@ -102,6 +117,7 @@ ${BOLD}EXAMPLES${RESET}
   ${DIM}# Manage secrets${RESET}
   ad secrets set STRIPE_API_KEY
   ad secrets list
+  ad secrets remove OLD_KEY --force
 
 ${DIM}Documentation: https://docs.agentdeploy.io${RESET}
 ${DIM}Support: https://github.com/agentdeploy-io/agent-deploy-cli/issues${RESET}
@@ -198,6 +214,65 @@ async function main(): Promise<void> {
         break;
       }
 
+      // ── whoami ──────────────────────────────────────────────────────────
+      case "whoami": {
+        const me = await whoami();
+        console.log(`  User ID:  ${me.user_id}`);
+        if (me.key_name) console.log(`  API key:  ${me.key_name}`);
+        if (me.scopes?.length) console.log(`  Scopes:   ${me.scopes.join(", ")}`);
+        console.log(`  API URL:  ${getApiUrl()}`);
+        break;
+      }
+
+      // ── templates ───────────────────────────────────────────────────────
+      case "templates":
+      case "template": {
+        const templates = await listTemplates();
+        if (templates.length === 0) {
+          console.log("  No templates yet. Run 'ad deploy' to create one.");
+          break;
+        }
+        console.log(`  ${BOLD}ID    Status     Runtime  Name${RESET}`);
+        for (const t of templates) {
+          const status = t.status.padEnd(10);
+          const runtime = (t.deploy_runtime ?? "-").padEnd(8);
+          console.log(`  ${String(t.id).padEnd(6)}${status}${runtime}${t.name}${t.is_flow ? " (flow)" : ""}`);
+        }
+        console.log();
+        console.log("  Use a template ID in .agentdeploy/config.json (templateId)");
+        console.log("  to pin 'ad deploy' to that template.");
+        break;
+      }
+
+      // ── deployments ─────────────────────────────────────────────────────
+      case "deployments":
+      case "deployment": {
+        const deployments = await listMyDeployments();
+        if (deployments.length === 0) {
+          console.log("  No deployments yet.");
+          break;
+        }
+        console.log(`  ${BOLD}ID                                     Status       Template  URL${RESET}`);
+        for (const d of deployments) {
+          const status = (d.status ?? "").padEnd(13);
+          const template = String(d.template_id ?? "-").padEnd(9);
+          console.log(`  ${d.id} ${status}${template}${d.url ?? "(pending)"}`);
+        }
+        break;
+      }
+
+      // ── yank ────────────────────────────────────────────────────────────
+      case "yank": {
+        const versionId = positional[0];
+        if (!versionId) {
+          console.error("Usage: ad yank <version-id>");
+          process.exit(1);
+        }
+        const yanked = await yankEdgeVersion(versionId);
+        console.log(`  ✓ Yanked version ${yanked.id} (${yanked.status})`);
+        break;
+      }
+
       // ── dev ─────────────────────────────────────────────────────────────
       case "dev":
       case "serve": {
@@ -222,7 +297,7 @@ async function main(): Promise<void> {
       // ── secrets ─────────────────────────────────────────────────────────
       case "secrets":
       case "secret": {
-        const subcommand = (positional[0] || "list") as "set" | "list" | "required";
+        const subcommand = positional[0] || "list";
 
         if (subcommand === "set") {
           const key = positional[1];
@@ -232,8 +307,15 @@ async function main(): Promise<void> {
             process.exit(1);
           }
           await secretsCommand({ command: "set", key, value });
+        } else if (subcommand === "remove" || subcommand === "delete" || subcommand === "rm") {
+          const key = positional[1];
+          if (!key) {
+            console.error("Usage: ad secrets remove <KEY> [--force]");
+            process.exit(1);
+          }
+          await secretsCommand({ command: "remove", key, force: flags.force === true });
         } else {
-          await secretsCommand({ command: subcommand });
+          await secretsCommand({ command: subcommand === "required" ? "required" : "list" });
         }
         break;
       }
@@ -266,7 +348,8 @@ async function main(): Promise<void> {
       case "logs":
       case "log": {
         const follow = flags.follow === true || flags.f === true;
-        await logsCommand({ follow });
+        const limit = flags.limit !== undefined ? Number(flags.limit) : undefined;
+        await logsCommand({ follow, limit });
         break;
       }
 

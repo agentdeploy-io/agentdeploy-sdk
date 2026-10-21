@@ -34,6 +34,7 @@ Object.entries(CSS_VARS).forEach(([key, value]) => {
 import { ToastProvider, registerToastPusher, useToast } from "./hooks/useToast";
 import { AuthProvider } from "./hooks/useAuth";
 import { AgentRegistryProvider } from "./hooks/useAgentRegistry";
+import { DeploymentSelectorProvider } from "./hooks/useDeploymentSelector";
 
 // ─── Router ──────────────────────────────────────────────────────
 import { useRouter, buildAgentRoute } from "./hooks/useRouter";
@@ -52,12 +53,26 @@ import {
   CoreDetailView,
   ConfigView,
   ObservabilityView,
+  DataStudioView,
+  PipelineView,
+  HITLView,
+  ScheduleManagerView,
+  AgentWireView,
+  SecretsConfigView,
   SettingsView,
   NotFoundView,
 } from "./views";
 
+// ─── Showcase ────────────────────────────────────────────────────
+import { ShowcaseOverlay, useShowcase, isTourMode } from "./showcase";
+import { DemoBadge } from "./showcase/DemoBadge";
+
 // ─── Shared Components (auth guard + error boundary) ─────────────
 import { ErrorBoundary, AuthGuard } from "./components/shared";
+
+// ─── Global Components ──────────────────────────────────────────
+import { PausedBanner } from "./components/PausedBanner";
+import { useSettingsState } from "./hooks/useSettings";
 
 // ─── App Component ───────────────────────────────────────────────
 
@@ -68,6 +83,8 @@ import { ErrorBoundary, AuthGuard } from "./components/shared";
 const App: React.FC = () => {
   const { route, navigate } = useRouter();
   const { push } = useToast();
+  const { paused, setPaused } = useSettingsState();
+  const { tourActive, stepIndex, totalSteps, onNext, onPrev, onSkip } = useShowcase();
 
   // Register imperative toast pusher for non-component usage
   React.useEffect(() => {
@@ -166,8 +183,26 @@ const App: React.FC = () => {
       case "observability":
         return <ObservabilityView />;
 
+      case "data-studio":
+        return <DataStudioView />;
+
+      case "pipeline":
+        return <PipelineView />;
+
+      case "hitl":
+        return <HITLView />;
+
+      case "agent-wire":
+        return <AgentWireView />;
+
+      case "schedule-manager":
+        return <ScheduleManagerView />;
+
       case "settings":
         return <SettingsView />;
+
+      case "secrets-config":
+        return <SecretsConfigView />;
 
       case "not-found":
         return (
@@ -248,11 +283,29 @@ const App: React.FC = () => {
         </div>
       )}
     >
-      <ConsoleLayout route={route} onNavigate={handleNavigate}>
+      {paused && <PausedBanner onResume={() => setPaused(false)} />}
+      <ConsoleLayout
+        route={route}
+        onNavigate={handleNavigate}
+        topBarActions={
+          (tourActive || isTourMode()) ? (
+            <DemoBadge onExit={onSkip} />
+          ) : undefined
+        }
+      >
         <ErrorBoundary resetKeys={[route.view, route.agentId, route.tab]}>
           {renderView()}
         </ErrorBoundary>
       </ConsoleLayout>
+      {tourActive && (
+        <ShowcaseOverlay
+          stepIndex={stepIndex}
+          totalSteps={totalSteps}
+          onNext={onNext}
+          onPrev={onPrev}
+          onSkip={onSkip}
+        />
+      )}
     </ErrorBoundary>
   );
 };
@@ -269,9 +322,11 @@ createRoot(container).render(
     <AuthProvider>
       <ToastProvider>
         <AgentRegistryProvider>
-          <AuthGuard>
-            <App />
-          </AuthGuard>
+          <DeploymentSelectorProvider>
+            <AuthGuard>
+              <App />
+            </AuthGuard>
+          </DeploymentSelectorProvider>
         </AgentRegistryProvider>
       </ToastProvider>
     </AuthProvider>

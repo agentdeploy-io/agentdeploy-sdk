@@ -76,6 +76,18 @@ export const AGENTS: AgentRegistryEntry[] = [
     capabilities: ["chat", "rpc:reset"],
   },
   {
+    id: "markie",
+    name: "Business Outreach (Markie)",
+    description: "Registry-grounded BD: crawl → score → gated pitch → reply tracking",
+    icon: "📈",
+    kind: "chat",
+    wsPath: "/agents/markie-agent/main",
+    port: 8791,
+    supportsChat: true,
+    hasCron: true,
+    capabilities: ["chat", "cron:0 1 * * *"],
+  },
+  {
     id: "polymarket-intel",
     name: "Polymarket Intel",
     description: "Scheduled market intelligence aggregator for prediction markets",
@@ -141,6 +153,22 @@ export function buildAgentWsUrl(agent: AgentRegistryEntry): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
   return `${protocol}//${host}${agent.wsPath}`;
+}
+
+/**
+ * Base prefix for deterministic /cmd/<name> routes (slash commands, review
+ * queue). Null when no route can reach the agent.
+ *
+ *   - Production: the console proxy route (/d/<deploymentId>) — the console
+ *     worker forwards /d/<id>/* to the agent worker and mints the JWT.
+ *   - Local dev (agent.port > 0): same-origin wsPath — the Vite proxy routes
+ *     /agents/<namespace>/* straight to the local worker (no auth).
+ */
+export function agentCmdPrefix(agent: AgentRegistryEntry): string | null {
+  const p = agent.wsPath.split("/agents/")[0];
+  if (p && p.startsWith("/d/")) return p;
+  if (agent.port > 0) return agent.wsPath;
+  return null;
 }
 
 /**

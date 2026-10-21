@@ -28,6 +28,10 @@ const VALID_VIEWS: ViewId[] = [
   "core-detail",
   "config",
   "observability",
+  "data-studio",
+  "pipeline",
+  "hitl",
+  "schedule-manager",
   "settings",
 ];
 

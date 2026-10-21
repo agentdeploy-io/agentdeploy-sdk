@@ -6,6 +6,8 @@ import { getApiUrl, requireAuth, loadCredentials, saveCredentials } from "./conf
 
 export interface EdgeVersionInput {
   templateId: number;
+  /** First-deploy support: server auto-creates a draft template when templateId is 0. */
+  templateName?: string;
   sellerId: string;
   version: string;
   entrypoint?: string;
@@ -43,7 +45,9 @@ export interface EdgeBindingInput {
 
 export interface EdgeVersionResponse {
   id: string;
+  /** Server returns snake_case `template_id` on the raw record. */
   templateId: number;
+  template_id?: number;
   version: string;
   status: string;
   source?: string;
@@ -114,7 +118,7 @@ async function apiRequest<T>(
   };
 
   if (!options?.skipAuth) {
-    // Per-user Bearer auth (gaps.md §10): the CLI never holds the shared
+    // Per-user Bearer auth: the CLI never holds the shared
     // INTERNAL_SERVICE_TOKEN. Identity/sellerId/userId are derived from the
     // key server-side — this client no longer sends them.
     const auth = requireAuth();
@@ -147,6 +151,92 @@ async function apiRequest<T>(
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
+
+export interface WhoamiResponse {
+  user_id: string;
+  key_id?: string;
+  key_name?: string;
+  scopes?: string[];
+}
+
+export async function whoami(): Promise<WhoamiResponse> {
+  const res = await apiRequest<{ data: WhoamiResponse } | WhoamiResponse>(
+    "GET",
+    "/cli/whoami"
+  );
+  if (!res.ok) {
+    const err = res.data as { message?: string };
+    throw new Error(err.message || `whoami failed (${res.status})`);
+  }
+  const data = res.data as { data?: WhoamiResponse } | WhoamiResponse;
+  return "data" in data && data.data ? data.data : (data as WhoamiResponse);
+}
+
+// ── Templates & deployments listings ────────────────────────────────────────
+
+export interface SellerTemplate {
+  id: number;
+  name: string;
+  slug: string;
+  status: string;
+  deploy_runtime?: string;
+  is_flow?: boolean;
+  created_at?: string;
+}
+
+export async function listTemplates(): Promise<SellerTemplate[]> {
+  const res = await apiRequest<{ data: { templates: SellerTemplate[] } } | { templates: SellerTemplate[] }>(
+    "GET",
+    "/cli/templates"
+  );
+  if (!res.ok) {
+    const err = res.data as { message?: string };
+    throw new Error(err.message || `Failed to list templates (${res.status})`);
+  }
+  const data = res.data as { data?: { templates: SellerTemplate[] }; templates?: SellerTemplate[] };
+  return data.data?.templates ?? data.templates ?? [];
+}
+
+export interface DeploymentSummary {
+  id: string;
+  template_id: number;
+  status: string;
+  url: string | null;
+  model: string | null;
+  created_at?: string;
+}
+
+export async function listMyDeployments(): Promise<DeploymentSummary[]> {
+  const res = await apiRequest<{ data?: { deployments: DeploymentSummary[] }; deployments?: DeploymentSummary[] }>(
+    "GET",
+    "/cli/deployments"
+  );
+  if (!res.ok) {
+    const err = res.data as { message?: string };
+    throw new Error(err.message || `Failed to list deployments (${res.status})`);
+  }
+  const data = res.data as { data?: { deployments: DeploymentSummary[] }; deployments?: DeploymentSummary[] };
+  return data.data?.deployments ?? data.deployments ?? [];
+}
+
+// ── Version yank (rollback/unpublish) ────────────────────────────────────────
+
+export async function yankEdgeVersion(versionId: string): Promise<EdgeVersionResponse> {
+  const res = await apiRequest<{ data: EdgeVersionResponse } | EdgeVersionResponse>(
+    "POST",
+    `/cli/edge/versions/${versionId}/yank`
+  );
+  if (!res.ok) {
+    const err = res.data as { message?: string; error?: { code?: string; message?: string } };
+    const code = err.error?.code;
+    const message = err.error?.message || err.message;
+    throw new Error(
+      message ? (code ? `[${code}] ${message}` : message) : `Yank failed (${res.status})`
+    );
+  }
+  const data = res.data as { data?: EdgeVersionResponse } | EdgeVersionResponse;
+  return "data" in data && data.data ? data.data : (data as EdgeVersionResponse);
+}
 
 export async function verifyAndSaveCredentials(
   apiKey: string,
@@ -187,6 +277,42 @@ export async function verifyAndSaveCredentials(
   return { userId, valid: true };
 }
 
+// ── Logs ─────────────────────────────────────────────────────────────────────
+
+export interface WorkerLogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+  eventId?: string;
+}
+
+export interface DeploymentLogsResponse {
+  logs: WorkerLogEntry[];
+  note?: string;
+}
+
+export async function getDeploymentLogs(
+  deploymentId: string,
+  options: { limit?: number; since?: number } = {}
+): Promise<DeploymentLogsResponse> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.since !== undefined) params.set("since", String(options.since));
+  const qs = params.toString();
+  const res = await apiRequest<{ data: DeploymentLogsResponse } | DeploymentLogsResponse>(
+    "GET",
+    `/cli/deployments/${deploymentId}/logs${qs ? `?${qs}` : ""}`
+  );
+
+  if (!res.ok) {
+    const err = res.data as { message?: string };
+    throw new Error(err.message || `Failed to fetch logs (${res.status})`);
+  }
+
+  const data = res.data as { data?: DeploymentLogsResponse } | DeploymentLogsResponse;
+  return "data" in data && data.data ? data.data : (data as DeploymentLogsResponse);
+}
+
 // ── Edge Version Management ──────────────────────────────────────────────────
 
 export async function createEdgeVersion(
@@ -199,12 +325,29 @@ export async function createEdgeVersion(
   );
 
   if (!res.ok) {
-    const err = res.data as { message?: string; error?: string };
-    throw new Error(err.message || err.error || `Failed to create edge version (${res.status})`);
+    const err = res.data as {
+      message?: string;
+      error?: string | { code?: string; message?: string };
+    };
+    const code = typeof err.error === "object" ? err.error?.code : undefined;
+    if (code === "SELLER_VERIFICATION_REQUIRED") {
+      throw new Error(
+        "CLI deploys are limited to verified sellers.\n" +
+          "Complete seller verification (Stripe Identity) and operator approval in the dashboard first:\n" +
+          "  Dashboard → Seller → CLI keys"
+      );
+    }
+    const message = typeof err.error === "object" ? err.error?.message : undefined;
+    throw new Error(message || err.message || `Failed to create edge version (${res.status})`);
   }
 
   const data = res.data as { data?: EdgeVersionResponse } | EdgeVersionResponse;
-  return "data" in data && data.data ? data.data : (data as EdgeVersionResponse);
+  const version = "data" in data && data.data ? data.data : (data as EdgeVersionResponse);
+  // Normalize snake_case template_id from the raw record.
+  if (version.templateId === undefined && version.template_id !== undefined) {
+    version.templateId = version.template_id;
+  }
+  return version;
 }
 
 export async function validateEdgeVersion(versionId: string): Promise<unknown> {
@@ -239,6 +382,12 @@ export async function publishEdgeVersion(
     // the code + full message, never collapse to a generic status string.
     if (code === "SCAN_FAILED" || code === "SCAN_REQUIRED") {
       throw new Error(`Security scan blocked publish [${code}]\n${message ?? ""}`);
+    }
+    if (code === "SELLER_VERIFICATION_REQUIRED") {
+      throw new Error(
+        "Your seller verification status changed — CLI publishing is limited to verified sellers.\n" +
+          "Check Dashboard → Seller for your current verification status."
+      );
     }
     throw new Error(
       message ? (code ? `[${code}] ${message}` : message) : `Publish failed (${res.status})`
@@ -329,6 +478,23 @@ export async function setSecret(
   if (!res.ok) {
     const err = res.data as { message?: string };
     throw new Error(err.message || `Failed to set secret (${res.status})`);
+  }
+}
+
+export async function deleteSecret(
+  deploymentId: string,
+  _userId: string,
+  secretKey: string
+): Promise<void> {
+  // _userId kept for call-site compatibility; identity is key-derived.
+  const res = await apiRequest<unknown>(
+    "DELETE",
+    `/cli/deployments/${deploymentId}/secrets/${encodeURIComponent(secretKey)}`
+  );
+
+  if (!res.ok) {
+    const err = res.data as { message?: string };
+    throw new Error(err.message || `Failed to delete secret (${res.status})`);
   }
 }
 

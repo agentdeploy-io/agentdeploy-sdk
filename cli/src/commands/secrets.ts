@@ -3,12 +3,13 @@
 import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { loadProjectConfig, findProjectRoot, requireAuth } from "../config.js";
-import { setSecret, getSecrets, getRequiredSecrets } from "../api-client.js";
+import { setSecret, deleteSecret, getSecrets, getRequiredSecrets } from "../api-client.js";
 
 export interface SecretsArgs {
-  command: "set" | "list" | "required";
+  command: "set" | "list" | "required" | "remove";
   key?: string;
   value?: string;
+  force?: boolean;
 }
 
 export async function secretsCommand(args: SecretsArgs): Promise<void> {
@@ -38,6 +39,9 @@ export async function secretsCommand(args: SecretsArgs): Promise<void> {
       break;
     case "required":
       await secretsRequired(deploymentId, auth.userId || "");
+      break;
+    case "remove":
+      await secretsRemove(deploymentId, auth.userId || "", args.key, args.force);
       break;
   }
 }
@@ -73,6 +77,37 @@ async function secretsSet(
   console.log(`Setting secret "${key}"...`);
   await setSecret(deploymentId, userId, key!, value);
   console.log(`  ✓ Secret "${key}" set.`);
+}
+
+async function secretsRemove(
+  deploymentId: string,
+  userId: string,
+  key?: string,
+  force?: boolean
+): Promise<void> {
+  if (!key) {
+    const rl = readline.createInterface({ input: stdin, output: stdout });
+    key = (await rl.question("Secret key to remove: ")).trim();
+    rl.close();
+    if (!key) {
+      console.error("Secret key is required.");
+      process.exit(1);
+    }
+  }
+
+  if (!force) {
+    const rl = readline.createInterface({ input: stdin, output: stdout });
+    const answer = (await rl.question(`Remove secret "${key}" from the deployment? [y/N] `)).trim().toLowerCase();
+    rl.close();
+    if (answer !== "y" && answer !== "yes") {
+      console.log("Aborted.");
+      return;
+    }
+  }
+
+  console.log(`Removing secret "${key}"...`);
+  await deleteSecret(deploymentId, userId, key);
+  console.log(`  ✓ Secret "${key}" removed.`);
 }
 
 async function secretsList(deploymentId: string, userId: string): Promise<void> {

@@ -11,7 +11,7 @@
 // 8. Print the worker URL
 
 import { bundleAgent, formatBytes } from "../bundler.js";
-import { loadProjectConfig, findProjectRoot, requireAuth } from "../config.js";
+import { loadProjectConfig, saveProjectConfig, findProjectRoot, requireAuth } from "../config.js";
 import {
   createEdgeVersion,
   validateEdgeVersion,
@@ -19,6 +19,7 @@ import {
   reprovisionDeployment,
   registerAgents,
   validateAgentRegistry,
+  listMyDeployments,
   type AgentDeclarationInput,
 } from "../api-client.js";
 
@@ -97,7 +98,10 @@ export async function deployCommand(args: DeployArgs): Promise<void> {
   console.log(`  [2/6] Uploading version ${version}...`);
 
   const versionResponse = await createEdgeVersion({
+    // templateId 0 + templateName → the server auto-creates a draft template
+    // on first deploy (server returns the real templateId in the response).
     templateId: config.templateId || 0,
+    templateName: config.name,
     // Server overrides sellerId from the Bearer key (ownership-checked);
     // this field only satisfies the request schema.
     sellerId: auth.userId || "00000000-0000-0000-0000-000000000000",
@@ -112,6 +116,14 @@ export async function deployCommand(args: DeployArgs): Promise<void> {
   });
 
   console.log(`       ✓ Version ID: ${versionResponse.id}`);
+
+  // Persist the resolved templateId so future deploys, reprovisioning and
+  // the dashboard link all target the same template.
+  if (versionResponse.templateId && versionResponse.templateId !== config.templateId) {
+    config.templateId = versionResponse.templateId;
+    saveProjectConfig(config, projectRoot);
+    console.log(`       ✓ Template ID: ${versionResponse.templateId} (saved to .agentdeploy/config.json)`);
+  }
 
   // Show detected SDK capabilities if available
   const cap = versionResponse.capabilityInfo;
@@ -203,21 +215,44 @@ export async function deployCommand(args: DeployArgs): Promise<void> {
     console.log(`    Dashboard: https://dashboard.agentdeploy.io/deployments/${config.deploymentId}`);
     console.log("  ──────────────────────────────────────────────");
     console.log();
-  } else {
-    console.log("  [6/6] Provisioning new deployment...");
-    console.log("       ℹ First deployment — use the AgentDeploy dashboard to");
-    console.log("         provision a deployment from this template version.");
-    console.log();
-    console.log("  ──────────────────────────────────────────────");
-    console.log("  ✓ Template version published!");
-    console.log(`    Version: ${version}`);
-    console.log(`    Template ID: ${config.templateId || "(new — check dashboard)"}`);
-    console.log(`    Dashboard: https://dashboard.agentdeploy.io/templates${config.templateId ? `/${config.templateId}` : ""}`);
-    console.log("  ──────────────────────────────────────────────");
-    console.log();
-    console.log("  To create a deployment, visit the dashboard link above");
-    console.log("  or use the platform API:");
-    console.log("    POST /internal/edge/deploy");
-    console.log();
+    return;
   }
+
+  // First deploy: a platform-provisioned deployment may already exist for this
+  // template (e.g. demo provisioning after publish, or a dashboard-created
+  // one). Adopt it so `ad secrets` / `ad logs` / future reprovisions work.
+  console.log("  [6/6] Linking deployment...");
+  try {
+    const deployments = await listMyDeployments();
+    const match = deployments.find((d) => d.template_id === config.templateId);
+    if (match) {
+      config.deploymentId = match.id;
+      saveProjectConfig(config, projectRoot);
+      console.log(`       ✓ Linked existing deployment: ${match.id}`);
+      console.log();
+      console.log("  ──────────────────────────────────────────────");
+      console.log(`  ✓ Deployed: ${match.url || "(URL pending)"}`);
+      console.log(`    Status: ${match.status}`);
+      console.log(`    Dashboard: https://dashboard.agentdeploy.io/deployments/${match.id}`);
+      console.log("  ──────────────────────────────────────────────");
+      console.log();
+      return;
+    }
+  } catch (err) {
+    console.log(`       ℹ Deployment lookup skipped: ${(err as Error).message}`);
+  }
+
+  console.log("       ℹ No deployment exists yet — use the AgentDeploy dashboard to");
+  console.log("         provision a deployment from this template version.");
+  console.log();
+  console.log("  ──────────────────────────────────────────────");
+  console.log("  ✓ Template version published!");
+  console.log(`    Version: ${version}`);
+  console.log(`    Template ID: ${config.templateId ?? "(see dashboard)"}`);
+  console.log(`    Dashboard: https://dashboard.agentdeploy.io/templates${config.templateId ? `/${config.templateId}` : ""}`);
+  console.log("  ──────────────────────────────────────────────");
+  console.log();
+  console.log("  Re-run 'ad deploy' after provisioning to link the deployment,");
+  console.log("  which enables 'ad secrets' and 'ad logs'.");
+  console.log();
 }

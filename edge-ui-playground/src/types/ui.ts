@@ -19,6 +19,10 @@ export type ViewId =
   | "core-detail"
   | "config"
   | "observability"
+  | "data-studio"
+  | "pipeline"
+  | "hitl"
+  | "schedule-manager"
   | "settings"
   | "not-found";
 

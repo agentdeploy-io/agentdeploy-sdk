@@ -26,6 +26,7 @@ interface ShimTask {
   state: string;
   transitions: Array<{ from: string | null; to: string; at: string }>;
   budgetTokens?: number;
+  budgetVmMinutes?: number;
   tokensUsed: number;
   process?: ChildProcess;
   outputTail: string;
@@ -116,8 +117,8 @@ async function runCliTask(
 
 async function runServerDelegate(
   taskId: string,
-  delegate: (payload: { taskId: string; taskType: string; input: Record<string, unknown>; secrets: Record<string, string> }) => Promise<{ state: string; tokensUsed?: number; error?: string }>,
-  payload: { taskId: string; taskType: string; input: Record<string, unknown>; secrets: Record<string, string> }
+  delegate: (payload: { taskId: string; taskType: string; input: Record<string, unknown>; secrets: Record<string, string>; budget?: { vmMinutes?: number; tokens?: number }; maxRuntimeSec?: number }) => Promise<{ state: string; tokensUsed?: number; error?: string }>,
+  payload: { taskId: string; taskType: string; input: Record<string, unknown>; secrets: Record<string, string>; budget?: { vmMinutes?: number; tokens?: number }; maxRuntimeSec?: number }
 ): Promise<void> {
   const task = tasks.get(taskId)!;
   transition(task, "running");
@@ -170,7 +171,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (req.method === "POST" && p === "/tasks") {
     let body = "";
     for await (const chunk of req) body += chunk;
-    let parsed: { taskType?: string; payload?: Record<string, unknown>; budget?: { tokens?: number } };
+    let parsed: { taskType?: string; payload?: Record<string, unknown>; budget?: { vmMinutes?: number; tokens?: number }; maxRuntimeSec?: number };
     try {
       parsed = JSON.parse(body || "{}");
     } catch {
@@ -186,6 +187,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       state: "queued",
       transitions: [{ from: null, to: "queued", at: nowIso() }],
       budgetTokens: parsed.budget?.tokens,
+      budgetVmMinutes: parsed.budget?.vmMinutes,
       tokensUsed: 0,
       outputTail: "",
     };
@@ -206,6 +208,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         taskType: parsed.taskType,
         input,
         secrets,
+        budget: parsed.budget,
+        maxRuntimeSec: parsed.maxRuntimeSec,
       });
     } else {
       transition(task, "running"); // buyer drives via framework UI

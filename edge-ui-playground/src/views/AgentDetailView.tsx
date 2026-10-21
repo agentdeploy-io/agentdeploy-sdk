@@ -19,12 +19,13 @@
  */
 
 import React from "react";
-import { Card, Badge, Button, Tabs, StatusDot, MetricCard, CodeBlock } from "../components/ui";
+import { Card, Badge, Button, Tabs, StatusDot, MetricCard, CodeBlock, Table } from "../components/ui";
 import { LoadingState, EmptyState, ErrorBoundary } from "../components/shared";
 import { COLORS, RADIUS, STATUS_COLORS } from "../constants/theme";
 import {
   AGENT_STATUS_LABELS,
   AGENT_STATUS_BADGE_VARIANT,
+  agentCmdPrefix,
   type AgentRegistryEntry,
 } from "../constants/agents";
 import { AGENT_TABS } from "../constants/navigation";
@@ -135,6 +136,7 @@ export const AgentDetailView: React.FC<AgentDetailViewProps> = ({
           {tab === "logs" && <AgentLogsTab agent={agent} />}
           {tab === "traces" && <AgentTracesTab agent={agent} />}
           {tab === "versions" && <AgentVersionsTab agent={agent} />}
+          {tab === "review" && <AgentReviewTab agent={agent} />}
         </ErrorBoundary>
       </div>
     </div>
@@ -240,10 +242,7 @@ const AgentChatTab: React.FC<{ agent: AgentRegistryEntry }> = ({
     if (slashMatch === "") return commands;
     return commands.filter((c) => c.name.startsWith(slashMatch));
   }, [slashMatch, commands]);
-  const agentPrefix = React.useMemo(() => {
-    const p = agent.wsPath.split("/agents/")[0];
-    return p && p.startsWith("/d/") ? p : null;
-  }, [agent.wsPath]);
+  const agentPrefix = agentCmdPrefix(agent);
   // File attachments staged in the composer (upload → R2 → file parts).
   const [attachments, setAttachments] = React.useState<
     Array<{ id: string; name: string; mimeType: string; sizeBytes: number; url?: string; status: "uploading" | "ready" | "error"; error?: string }>
@@ -1616,3 +1615,241 @@ const AgentVersionsTab: React.FC<{ agent: AgentRegistryEntry }> = () => (
     />
   </Card>
 );
+
+// ─── Review Tab (optional batch human-in-the-loop) ───────────────
+
+interface PendingLead {
+  key: string;
+  name: string;
+  country: string;
+  sic?: string;
+  incorporated?: string;
+  headcount?: string | number;
+  website?: string;
+  score?: number;
+  tier?: string;
+  reasons?: string[];
+  note?: string;
+}
+
+const TIER_COLORS: Record<string, string> = {
+  HOT: "#ef4444",
+  WARM: "#f59e0b",
+  COLD: "#64748b",
+};
+
+const AgentReviewTab: React.FC<{ agent: AgentRegistryEntry }> = ({ agent }) => {
+  const [leads, setLeads] = React.useState<PendingLead[]>([]);
+  const [supported, setSupported] = React.useState<boolean | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [busy, setBusy] = React.useState<"" | "approve" | "reject">("");
+
+  const agentPrefix = agentCmdPrefix(agent);
+
+  const load = React.useCallback(async () => {
+    if (!agentPrefix) {
+      setSupported(false);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await authFetch(`${agentPrefix}/cmd/pending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) {
+        setSupported(false);
+        setLeads([]);
+        return;
+      }
+      const j = (await res.json().catch(() => null)) as {
+        pending?: PendingLead[];
+        count?: number;
+      } | null;
+      setSupported(true);
+      setLeads(Array.isArray(j?.pending) ? (j!.pending as PendingLead[]) : []);
+    } catch {
+      setSupported(false);
+      setLeads([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [agentPrefix]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const act = async (action: "approve" | "reject") => {
+    if (!agentPrefix) return;
+    if (!window.confirm(`${action === "approve" ? "Approve" : "Reject"} the whole pending batch?`)) {
+      return;
+    }
+    setBusy(action);
+    try {
+      // Drafting pitches for an approved batch can take a few minutes.
+      const res = await authFetch(`${agentPrefix}/cmd/approve-batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+        signal: AbortSignal.timeout(600000),
+      });
+      const j = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!res.ok || !j) {
+        toast.error("Batch review", res.ok ? "Command failed." : `Command failed (${res.status}).`);
+      } else {
+        toast.success(
+          "Batch review",
+          `${j.approved ?? 0} approved, ${j.rejected ?? 0} rejected, ${j.drafted ?? 0} drafted.`,
+        );
+      }
+    } catch (err) {
+      toast.error("Batch review", err instanceof Error ? err.message : "Command failed.");
+    } finally {
+      setBusy("");
+      void load();
+    }
+  };
+
+  if (!agentPrefix) {
+    return (
+      <Card>
+        <Card.Header title="Review" subtitle="Batch approval queue" />
+        <EmptyState
+          icon="🔌"
+          title="No Agent Proxy"
+          message="This agent has no console proxy route available. Open it from a production deployment to review crawl batches."
+        />
+      </Card>
+    );
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <Card.Header title="Review" subtitle="Batch approval queue" />
+        <LoadingState message="Loading review queue…" />
+      </Card>
+    );
+  }
+
+  if (supported === false) {
+    return (
+      <Card>
+        <Card.Header title="Review" subtitle="Batch approval queue" />
+        <EmptyState
+          icon="📭"
+          title="No Review Queue"
+          message="This agent does not expose a batch review queue (the pending command is not registered). Agents with crawl + batch review show their pending leads here."
+        />
+      </Card>
+    );
+  }
+
+  const columns = [
+    {
+      key: "score",
+      label: "Score",
+      width: "90px",
+      render: (_: unknown, row: PendingLead) => (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+          <b>{row.score ?? 0}</b>
+          <Badge variant={row.tier === "HOT" ? "error" : row.tier === "WARM" ? "warning" : "neutral"}>
+            {row.tier || "—"}
+          </Badge>
+        </span>
+      ),
+    },
+    {
+      key: "name",
+      label: "Company",
+      render: (_: unknown, row: PendingLead) => (
+        <span>
+          {row.name}
+          <span style={{ color: COLORS.mutedForeground, marginLeft: "8px", fontSize: "12px" }}>
+            {row.key}
+          </span>
+        </span>
+      ),
+    },
+    { key: "country", label: "Country", width: "90px" },
+    { key: "sic", label: "SIC", width: "90px" },
+    { key: "headcount", label: "Headcount", width: "90px", render: (_: unknown, row: PendingLead) => (row.headcount === 0 || row.headcount ? String(row.headcount) : "—") },
+    {
+      key: "website",
+      label: "Website",
+      render: (_: unknown, row: PendingLead) =>
+        row.website ? (
+          <a href={`https://${row.website}`} target="_blank" rel="noreferrer" style={{ color: COLORS.primary }}>
+            {row.website}
+          </a>
+        ) : (
+          <span style={{ color: COLORS.mutedForeground }}>—</span>
+        ),
+    },
+    {
+      key: "reasons",
+      label: "Why (registry evidence)",
+      render: (_: unknown, row: PendingLead) => (
+        <span style={{ color: COLORS.mutedForeground, fontSize: "13px" }}>
+          {(row.reasons || []).join("; ").slice(0, 160) || row.note || "—"}
+        </span>
+      ),
+    },
+  ];
+
+  return (
+    <Card>
+      <Card.Header
+        title="Review"
+        subtitle="Optional human-in-the-loop — new crawl leads held here until you approve or reject the batch"
+      />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
+        <span style={{ fontSize: "14px", color: COLORS.mutedForeground }}>
+          {leads.length === 0
+            ? "Nothing awaiting review."
+            : `${leads.length} lead${leads.length === 1 ? "" : "s"} awaiting batch review — approval drafts the pitches, nothing is sent until you send.`}
+        </span>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <Button
+            variant="outline"
+            disabled={busy !== "" || leads.length === 0}
+            onClick={() => void act("reject")}
+          >
+            {busy === "reject" ? "Rejecting…" : "Reject batch"}
+          </Button>
+          <Button
+            variant="primary"
+            disabled={busy !== "" || leads.length === 0}
+            onClick={() => void act("approve")}
+          >
+            {busy === "approve" ? "Approving…" : "Approve batch"}
+          </Button>
+        </div>
+      </div>
+      {leads.length === 0 ? (
+        <EmptyState
+          icon="✅"
+          title="Queue Clear"
+          message="Enable batch review with the settings command (requireBatchApproval true) and new crawl leads will appear here for approval."
+        />
+      ) : (
+        <>
+          <Table<PendingLead>
+            columns={columns}
+            data={leads}
+            rowKey={(row, i) => row.key || String(i)}
+            sortable
+          />
+          <p style={{ marginTop: "12px", fontSize: "13px", color: COLORS.mutedForeground }}>
+            Per-lead control: use the Chat tab — <code style={{ fontFamily: "ui-monospace, monospace" }}>/approve key=… action=approve</code>{" "}
+            or <code style={{ fontFamily: "ui-monospace, monospace" }}>/approve key=… action=reject</code>.
+          </p>
+        </>
+      )}
+    </Card>
+  );
+};

@@ -104,6 +104,7 @@ export const ObservabilityView: React.FC<ObservabilityViewProps> = () => {
 
       {/* ─── Metrics (from live health checks) ──────────────── */}
       <div
+        data-tour="wire"
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
