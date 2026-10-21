@@ -1,0 +1,13 @@
+# Copy to .dev.vars for local `wrangler dev`. Safe placeholder values only.
+AD_DEPLOYMENT_ID=dev-local
+AD_USER_ID=dev
+AD_SYNC_SECRET=dev-sync-secret
+AD_GATEWAY_BASE_URL=http://127.0.0.1:8794/v1
+AD_GATEWAY_API_KEY=dev-key
+AD_EDGE_CALLBACK_URL=http://127.0.0.1:8792
+
+# Leave EMPTY locally unless you intentionally want real email delivery
+# (also requires POST /cmd/settings {"sendEnabled":"true","dryRun":"false"}).
+BREVO_API_KEY=
+BREVO_SENDER_EMAIL=
+BRAND_NAME=Calla Dev

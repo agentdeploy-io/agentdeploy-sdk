@@ -1,0 +1,247 @@
+[
+  {
+    "key": "uk-12345678",
+    "expected_verdict": "verified",
+    "expected_website": "https://harrisonclarke.co.uk",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Company name in footer and title"
+  },
+  {
+    "key": "uk-11223344",
+    "expected_verdict": "verified",
+    "expected_website": "https://pemberton-associates.co.uk",
+    "expected_signals": [1, 5],
+    "expected_score": 65,
+    "notes": "Company name in footer, reg number on contact page"
+  },
+  {
+    "key": "uk-09876543",
+    "expected_verdict": "flagged",
+    "expected_website": "https://ridgewayfinancial.co.uk",
+    "expected_signals": [1],
+    "expected_score": 40,
+    "notes": "Footer match only, no title or reg number"
+  },
+  {
+    "key": "uk-14567890",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "No website exists — Brave returns only directory results"
+  },
+  {
+    "key": "uk-13456789",
+    "expected_verdict": "verified",
+    "expected_website": "https://sterlingpartners.co.uk",
+    "expected_signals": [1, 2, 5],
+    "expected_score": 85,
+    "notes": "Large company (85 emp) — website matches strongly but ICP size-excluded",
+    "icp_excluded": "size"
+  },
+  {
+    "key": "uk-08765432",
+    "expected_verdict": "verified",
+    "expected_website": "https://mitchelldawson.co.uk",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Company name in footer and title tag"
+  },
+  {
+    "key": "uk-07654321",
+    "expected_verdict": "verified",
+    "expected_website": "https://cartwrighthughes.co.uk",
+    "expected_signals": [1, 2, 3],
+    "expected_score": 75,
+    "notes": "Footer, title, and H1 all contain company name"
+  },
+  {
+    "key": "uk-16789012",
+    "expected_verdict": "flagged",
+    "expected_website": "https://brennanconroy.co.uk",
+    "expected_signals": [2, 3],
+    "expected_score": 35,
+    "notes": "Title and H1 match but no footer — no mandatory signal"
+  },
+  {
+    "key": "uk-06543210",
+    "expected_verdict": "verified",
+    "expected_website": "https://whitakersolicitors.co.uk",
+    "expected_signals": [1, 5],
+    "expected_score": 65,
+    "notes": "Footer match plus company registration number on about page"
+  },
+  {
+    "key": "uk-05432109",
+    "expected_verdict": "verified",
+    "expected_website": "https://broomfieldmedical.co.uk",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Practice name in footer and title"
+  },
+  {
+    "key": "uk-18901234",
+    "expected_verdict": "flagged",
+    "expected_website": "https://orchardhealthclinic.co.uk",
+    "expected_signals": [1],
+    "expected_score": 40,
+    "notes": "Footer match only — new clinic with minimal web presence"
+  },
+  {
+    "key": "uk-25012345",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "No website exists — newly incorporated, no web presence"
+  },
+  {
+    "key": "uk-19012345",
+    "expected_verdict": "verified",
+    "expected_website": "https://cleansweepfacilities.co.uk",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Company name in footer and page title"
+  },
+  {
+    "key": "uk-03210987",
+    "expected_verdict": "verified",
+    "expected_website": "https://brightsparkelectrical.co.uk",
+    "expected_signals": [2, 3, 5],
+    "expected_score": 60,
+    "notes": "Title, H1, and reg number — no footer match but reg number is mandatory signal"
+  },
+  {
+    "key": "uk-20123456",
+    "expected_verdict": "flagged",
+    "expected_website": "https://premierlogistics.co.uk",
+    "expected_signals": [1],
+    "expected_score": 40,
+    "notes": "Footer match only — generic logistics site with no title match"
+  },
+  {
+    "key": "uk-26123456",
+    "expected_verdict": "verified",
+    "expected_website": "https://fasttrackfreight.co.uk",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Company name in footer and title"
+  },
+  {
+    "key": "uk-21234567",
+    "expected_verdict": "verified",
+    "expected_website": "https://kingswayproperty.co.uk",
+    "expected_signals": [1, 2, 4],
+    "expected_score": 80,
+    "notes": "Footer, title, and registered address on contact page"
+  },
+  {
+    "key": "uk-22345678",
+    "expected_verdict": "verified",
+    "expected_website": "https://grandviewestates.co.uk",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Large company (120 emp) — website matches but ICP size-excluded",
+    "icp_excluded": "size"
+  },
+  {
+    "key": "uk-23456789",
+    "expected_verdict": "verified",
+    "expected_website": "https://northgateadvisory.co.uk",
+    "expected_signals": [1, 5],
+    "expected_score": 65,
+    "notes": "Footer match plus company number in legal notice"
+  },
+  {
+    "key": "uk-25678901",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "ICP-excluded: SIC 62 (software/web development)",
+    "icp_excluded": "sic"
+  },
+  {
+    "key": "ie-645321",
+    "expected_verdict": "verified",
+    "expected_website": "https://nolanfinancial.ie",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Company name in footer and title"
+  },
+  {
+    "key": "ie-634521",
+    "expected_verdict": "verified",
+    "expected_website": "https://connemaraaccounting.ie",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Company name in footer and title"
+  },
+  {
+    "key": "ie-623456",
+    "expected_verdict": "verified",
+    "expected_website": "https://murphykeane.ie",
+    "expected_signals": [1, 2],
+    "expected_score": 60,
+    "notes": "Firm name in footer and title"
+  },
+  {
+    "key": "ie-612345",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "No website exists — only CRO and HSE directory listings found"
+  },
+  {
+    "key": "ie-601234",
+    "expected_verdict": "verified",
+    "expected_website": "https://emeraldhomeservices.ie",
+    "expected_signals": [1, 2, 5],
+    "expected_score": 85,
+    "notes": "Footer, title, and company number on all pages"
+  },
+  {
+    "key": "ie-590123",
+    "expected_verdict": "verified",
+    "expected_website": "https://atlanticstorage.ie",
+    "expected_signals": [1, 3],
+    "expected_score": 55,
+    "notes": "Footer match and H1 heading contain company name"
+  },
+  {
+    "key": "ie-589012",
+    "expected_verdict": "flagged",
+    "expected_website": "https://shannonproperty.ie",
+    "expected_signals": [2, 4],
+    "expected_score": 40,
+    "notes": "Title and address match but no footer — no mandatory signal"
+  },
+  {
+    "key": "ie-578901",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "No valid website — Brave returns only LinkedIn and directory results"
+  },
+  {
+    "key": "ie-567890",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "ICP-excluded: SIC 73 (advertising agency)",
+    "icp_excluded": "sic"
+  },
+  {
+    "key": "ie-556789",
+    "expected_verdict": "rejected",
+    "expected_website": null,
+    "expected_signals": [],
+    "expected_score": 0,
+    "notes": "ICP-excluded: SIC 62 (IT consultancy / software)",
+    "icp_excluded": "sic"
+  }
+]

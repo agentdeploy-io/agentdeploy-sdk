@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.wrangler/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+dev.db
+dev.db-journal
+.mastra/
+local.db
+local.db-journal
+local.db-shm
+local.db-wal
+.dev.vars

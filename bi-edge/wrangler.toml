@@ -1,0 +1,22 @@
+name = "bi-edge"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "BI_EDGE", class_name = "BiEdgeAgent" },
+  { name = "Supervisor", class_name = "Supervisor" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BiEdgeAgent"]
+
+[triggers]
+crons = [
+  "0 1 * * *",
+  "*/30 * * * *",
+  "*/15 * * * *",
+  "0 3 * * *"
+]

@@ -1,0 +1,26 @@
+{
+  "name": "calla",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Calla — human-in-the-loop orchestration layer for multi-agent systems",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:no-brain": "node scripts/dev.mjs --no-brain",
+    "build": "npm run build -w @calla/shared && npm run build -w @calla/ui --if-present && npm run build -w @calla/brain --if-present",
+    "build:shared": "npm run build -w @calla/shared",
+    "dev:ui": "npm run dev -w @calla/ui",
+    "dev:edge": "npm run dev -w @calla/edge",
+    "dev:brain": "npm run dev -w @calla/brain",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "deploy:ui": "npm run deploy -w @calla/ui",
+    "deploy:edge": "npm run deploy -w @calla/edge"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

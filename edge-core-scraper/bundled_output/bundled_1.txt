@@ -1,0 +1,1357 @@
+// package.json
+{
+  "name": "@agentdeploy-io/edge-core-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@agentdeploy-io/core-sdk": "file:../core-sdk",
+    "adm-zip": "^0.6.1",
+    "crawlee": "^3.16.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
+
+
+// src/discover.ts
+// Website discovery via Brave Search + site crawling via Crawlee (CheerioCrawler).
+
+import { CheerioCrawler } from "crawlee";
+import { CONTACT_PATHS, extractEmails, extractPhones, extractSocials } from "./extract.js";
+import { domainToName, sleep } from "./registries.js";
+
+const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
+
+const DIRECTORY_DOMAINS = [
+  "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+  "youtube.com", "github.com", "crunchbase.com", "wikipedia.org", "yelp.com",
+  "yellowpages", "societe.com", "infogreffe", "pappers.fr", "data.gouv.fr",
+  "recherche-entreprises.api.gouv.fr", "insee.fr", "companieshouse.gov.uk",
+  "company-information.service.gov.uk", "ariregister.rik.ee", "cro.ie",
+  "diariodarepublica.pt", "google.", "bing.com", "yahoo.", "annuaire.",
+  "kompass.com", "opencorporates.com", "northdata.com", "dnb.com",
+  "designrush.com", "wanderlog.com", "clutch.co", "upcity.com",
+  "goodfirms.co", "design-love", "thebrandidentity", "procurement.",
+  "glassdoor", "builtin.com", "indeed", "glass", "merriam",
+];
+
+export type BraveOpts = { apiKey: string; country?: string };
+
+const COUNTRY_NAMES: Record<string, string> = {
+  ie: "ireland", uk: "united kingdom", pt: "portugal", fr: "france",
+  ee: "estonia", de: "germany", es: "spain", it: "italy",
+};
+
+export async function braveWebSearch(
+  query: string,
+  opts: BraveOpts,
+  count = 5
+): Promise<Array<{ title: string; url: string; description: string }>> {
+  // Some plans reject ISO codes (422) — fall back to the country name, then none.
+  const variants = opts.country
+    ? [opts.country.toUpperCase(), COUNTRY_NAMES[opts.country.toLowerCase()]].filter(Boolean)
+    : [];
+  variants.push(null);
+  let lastError = "no attempts";
+  for (const country of variants) {
+    const params = new URLSearchParams({ q: query, count: String(count) });
+    if (country) params.set("country", country);
+    try {
+      const res = await fetch(`${BRAVE_ENDPOINT}?${params}`, {
+        headers: {
+          Accept: "application/json",
+          "Accept-Encoding": "gzip",
+          "X-Subscription-Token": opts.apiKey,
+        },
+      });
+      if (res.status === 422) {
+        lastError = `Brave 422 (country=${country ?? "none"})`;
+        continue;
+      }
+      if (res.status === 429) {
+        await sleep(3000);
+        const retry = await fetch(`${BRAVE_ENDPOINT}?${params}`, {
+          headers: { Accept: "application/json", "X-Subscription-Token": opts.apiKey },
+        });
+        if (!retry.ok) throw new Error(`Brave search ${retry.status}`);
+        const data = (await retry.json()) as any;
+        return (data.web?.results ?? []).slice(0, count).map((r: any) => ({
+          title: r.title || "",
+          url: r.url || "",
+          description: r.description || "",
+        }));
+      }
+      if (!res.ok) throw new Error(`Brave search ${res.status}`);
+      const data = (await res.json()) as any;
+      return (data.web?.results ?? []).slice(0, count).map((r: any) => ({
+        title: r.title || "",
+        url: r.url || "",
+        description: r.description || "",
+      }));
+    } catch (e) {
+      lastError = (e as Error).message;
+      await sleep(1500);
+    }
+  }
+  throw new Error(lastError);
+}
+
+export function pickWebsite(
+  results: Array<{ title: string; url: string; description: string }>,
+  leadName: string
+): string | null {
+  const nameTokens = leadName.toLowerCase().split(/[\s()&.,]+/).filter((t) => t.length > 3);
+  for (const r of results) {
+    try {
+      const u = new URL(r.url);
+      const host = u.hostname.replace(/^www\./, "");
+      if (DIRECTORY_DOMAINS.some((d) => host.includes(d))) continue;
+      if (host.includes("blogspot") || host.includes("wixsite") || host.includes("github.io")) continue;
+      const text = `${u.hostname} ${r.title} ${r.description}`.toLowerCase();
+      const hits = nameTokens.filter((t) => text.includes(t)).length;
+      // Strict match: short names must match every token, long names at least 2.
+      const need = nameTokens.length === 0 ? 0 : nameTokens.length <= 2 ? nameTokens.length : Math.min(3, Math.ceil(nameTokens.length / 2));
+      if (nameTokens.length > 0 && hits >= need) {
+        return `https://${host}`;
+      }
+    } catch {
+      /* bad url */
+    }
+  }
+  return null;
+}
+
+/**
+ * Country web discovery (no open registry): Brave search scoped to the
+ * country, keep results that look like real business sites. Returns
+ * {domain, name, url, title} — the site-crawl phase adds contacts.
+ */
+export type DiscoveredSite = { domain: string; name: string; url: string; title: string };
+
+// Titles that are articles/listicles/courses, not business names.
+const TITLE_JUNK = /(melhores?|top \d|guia|listicle|best of|como escolher|curso de|formação|tutorial|20\d\d)(?![a-z]{3,})/i;
+// Hosts that are educational institutions, not SMB buyers.
+const NON_BUYER_HOST = /(\.edu\.[a-z]{2}$|\.ipp\.[a-z]{2}$|escola|instituto|istec|ipta|isep|univ)/i;
+
+export async function webDiscover(
+  query: string,
+  country: string,
+  braveKey: string,
+  max = 5
+): Promise<DiscoveredSite[]> {
+  const results = await braveWebSearch(query, { apiKey: braveKey, country }, 8);
+  const out: DiscoveredSite[] = [];
+  const seenDomains = new Set<string>();
+  for (const r of results) {
+    if (out.length >= max) break;
+    let u: URL;
+    try {
+      u = new URL(r.url);
+    } catch {
+      continue;
+    }
+    const host = u.hostname.replace(/^www\./, "");
+    if (DIRECTORY_DOMAINS.some((d) => host.includes(d))) continue;
+    if (/(blogspot|wixsite|github\.io|squarespace)/.test(host)) continue;
+    if (NON_BUYER_HOST.test(host)) continue;
+    if (TITLE_JUNK.test(r.title)) continue;
+    // Country scoping: keep only local ccTLD hosts (drops global noise like
+    // glassdoor.com / merriam-webster.com surfacing in the results).
+    if (host !== `${country}.ie` && !host.endsWith(`.${country}`)) continue;
+    if (seenDomains.has(host)) continue;
+    seenDomains.add(host);
+    const name = domainToName(host, r.title);
+    if (name.length < 3) continue;
+    out.push({ domain: host, name, url: `https://${host}`, title: r.title });
+  }
+  return out;
+}
+
+export type SiteContacts = {
+  emails: string[];
+  phones: string[];
+  socials: Record<string, string[]>;
+  pages: string[];
+  contactability: number;
+};
+
+/**
+ * Crawl a lead's website with Crawlee (CheerioCrawler): homepage + contact
+ * paths for the country, extracting emails / phones / socials.
+ */
+export async function crawlSite(
+  website: string,
+  country: string
+): Promise<SiteContacts | null> {
+  let base: URL;
+  try {
+    base = new URL(website);
+  } catch {
+    return null;
+  }
+  const paths = ["/", ...(CONTACT_PATHS[country] ?? CONTACT_PATHS.default)];
+  const seen = new Set<string>();
+  const startUrls: string[] = [];
+  for (const p of paths) {
+    const u = new URL(p, base.origin).toString();
+    if (!seen.has(u)) {
+      seen.add(u);
+      startUrls.push(u);
+    }
+  }
+
+  const emails = new Set<string>();
+  const phones = new Set<string>();
+  const socials: Record<string, string[]> = {};
+  const pages: string[] = [];
+
+  try {
+    const crawler = new CheerioCrawler({
+      maxConcurrency: 2,
+      maxRequestRetries: 1,
+      useSessionPool: false,
+      async requestHandler({ $, request }) {
+        const text = $("body").text() || "";
+        const html = $.html() || "";
+        for (const e of extractEmails(`${text}\n${html}`)) emails.add(e);
+        for (const ph of extractPhones(text)) phones.add(ph);
+        for (const [k, arr] of Object.entries(extractSocials(html))) {
+          socials[k] = [...new Set([...(socials[k] ?? []), ...arr])];
+        }
+        const tel = $("a[href^='tel:']").map((_, el) => $(el).attr("href")).get();
+        for (const t of tel) {
+          const digits = t.replace(/\D/g, "");
+          if (digits.length >= 7 && digits.length <= 15) phones.add(t.slice(4).trim());
+        }
+        pages.push(request.url);
+      },
+    });
+    await crawler.run(startUrls.slice(0, 5));
+  } catch (e) {
+    console.warn(`[crawl] ${website} failed: ${(e as Error).message}`);
+  }
+
+  let score = 0;
+  if (emails.size > 0) score += 25;
+  if (phones.size > 0) score += 10;
+  if (socials.linkedin?.length) score += 15;
+  if (socials.twitter?.length || socials.instagram?.length) score += 10;
+  if (pages.length > 1) score += 10;
+
+  return {
+    emails: [...emails].slice(0, 6),
+    phones: [...phones].slice(0, 4),
+    socials,
+    pages: pages.slice(0, 6),
+    contactability: Math.min(100, score),
+  };
+}
+
+
+// src/extract.ts
+// Contact extraction (regex-based, from the proven agent-recon contact-probe)
+// and SIC/NAF → vertical label hints.
+
+export const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+export const PHONE_RE = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}/g;
+
+const EMAIL_BLACKLIST = [
+  "example.com", "test.com", "domain.com", "email.com", "sentry.io",
+  "wixpress.com", "sentry-next.wixpress.com", "@2x", ".png", ".jpg", ".webp",
+  "user@", "email@", "name@", "your@", "info@example", "no-reply", "noreply",
+  "schema.org", "w3.org", "godaddy", "google.com", "godaddy.com",
+  "@company.com", "@firm.com", "@yourdomain", "@yourcompany", "info@company", "you@", "john@", "contact@company",
+];
+
+const TLD_RE = /\.(com|co\.uk|org\.uk|ie|pt|fr|ee|de|es|it|com|net|org|eu|io|dev|app|studio|agency|digital|online|site|shop|biz|info|me|ca|us|uk|co|ac\.uk|sch\.ie|edu\.pt|edu\.ie)$/i;
+
+const SOCIAL_DOMAINS: Record<string, string[]> = {
+  twitter: ["twitter.com", "x.com"],
+  linkedin: ["linkedin.com"],
+  github: ["github.com"],
+  instagram: ["instagram.com"],
+  facebook: ["facebook.com"],
+  youtube: ["youtube.com"],
+  discord: ["discord.gg", "discord.com/invite"],
+};
+
+export function extractEmails(text: string): string[] {
+  const found = new Set<string>();
+  for (const m of text.matchAll(EMAIL_RE)) {
+    let e = m[0].toLowerCase().trim();
+    // The greedy domain match can swallow trailing text ("x@foo.ptsecretaria")
+    // — trim the domain to a plausible TLD boundary.
+    const at = e.lastIndexOf("@");
+    const domain = e.slice(at + 1);
+    const tldM = domain.match(TLD_RE);
+    if (tldM && tldM.index !== undefined) {
+      e = e.slice(0, at + 1 + tldM.index + tldM[0].length);
+    }
+    if (EMAIL_BLACKLIST.some((b) => e.includes(b))) continue;
+    const local = e.split("@")[0];
+    if (local.length < 2 || local.length > 40) continue;
+    if (!TLD_RE.test(e.slice(at + 1))) continue;
+    if (/^[0-9]/.test(local)) continue; // concatenated digit noise
+    if (local === "example" || local === "sample" || local === "test123") continue;
+    found.add(e);
+  }
+  return [...found].slice(0, 6);
+}
+
+export function extractPhones(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(PHONE_RE)) {
+    const digits = m[0].replace(/\D/g, "");
+    if (digits.length >= 7 && digits.length <= 15) out.add(m[0].trim());
+  }
+  return [...out].slice(0, 4);
+}
+
+export function extractSocials(html: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [name, domains] of Object.entries(SOCIAL_DOMAINS)) {
+    const found = new Set<string>();
+    for (const m of html.matchAll(/https?:\/\/[^\s"'<>]+/g)) {
+      const u = m[0].replace(/\/$/, "");
+      if (domains.some((d) => u.includes(d))) found.add(u);
+    }
+    if (found.size > 0) out[name] = [...found].slice(0, 3);
+  }
+  return out;
+}
+
+/** Contact paths to try per country, after the homepage. */
+export const CONTACT_PATHS: Record<string, string[]> = {
+  fr: ["/contact", "/contact-us", "/nous-contacter", "/contactez-nous", "/mentions-legales"],
+  uk: ["/contact", "/contact-us", "/imprint"],
+  ee: ["/kontakt", "/kontakti", "/kontakt-andmed"],
+  pt: ["/contacto", "/contact", "/fale-conosco"],
+  default: ["/contact", "/contact-us", "/about", "/imprint"],
+};
+
+/**
+ * Coarse NAF/SIC → label hints used when jev's classification is unavailable.
+ * jev produces the final vertical; these are fallbacks + context for prompts.
+ */
+const NAF_HINTS: Array<[RegExp, string]> = [
+  [/^62\./, "IT & software"],
+  [/^63\./, "Data & information services"],
+  [/^69\./, "Legal & accounting"],
+  [/^70\./, "Management consultancy"],
+  [/^71\./, "Engineering, design & R&D"],
+  [/^72\./, "Research & development"],
+  [/^73\./, "Marketing & advertising"],
+  [/^74\./, "Specialist professional services"],
+  [/^77\./, "Rental & leasing"],
+  [/^79\./, "Travel & booking"],
+  [/^81\./, "Facility & building services"],
+  [/^82\./, "Office & business support"],
+  [/^85\./, "Education & training"],
+  [/^86\./, "Healthcare"],
+  [/^95\./, "Computer & phone repair"],
+  [/^46\./, "Wholesale"],
+  [/^47\./, "Retail & e-commerce"],
+  [/^49\./, "Transport"],
+  [/^52\./, "Warehousing & courier"],
+  [/^55\./, "Hotels & accommodation"],
+  [/^56\./, "Food & beverage service"],
+  [/^68\./, "Real estate"],
+  [/^41\./, "Construction"],
+  [/^43\./, "Construction & renovation"],
+  [/^45\./, "Auto repair & sales"],
+  [/^64\./, "Financial holding"],
+  [/^66\./, "Financial services"],
+];
+
+export function sicHint(code?: string): string | undefined {
+  if (!code) return undefined;
+  for (const [re, label] of NAF_HINTS) {
+    if (re.test(code)) return label;
+  }
+  return undefined;
+}
+
+
+// src/local-supervisor.ts
+// Local supervisor: mirrors the platform runtime-packaging shim's task
+// protocol (POST /tasks, GET /tasks/:id, GET /health) so the edge agent can
+// be developed against it with no Fly machine.
+import http from "node:http";
+import { executeTask } from "@agentdeploy-io/core-sdk";
+import agent from "./server.js";
+
+const PORT = Number(process.env.PORT || 8080);
+const tasks = new Map<string, { state: string; taskType: string; output?: unknown; error?: string; transitions: Array<{ to: string; at: string }> }>();
+let seq = 0;
+
+void agent; // registers with core-sdk on import
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+  if (req.method === "GET" && url.pathname === "/health") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ status: "ok", runtime: "local-supervisor" }));
+  }
+  if (req.method === "POST" && url.pathname === "/tasks") {
+    let body = "";
+    for await (const c of req) body += c;
+    const parsed = JSON.parse(body || "{}");
+    if (!parsed.taskType) {
+      res.writeHead(400, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ error: "taskType required" }));
+    }
+    seq += 1;
+    const taskId = `local-task-${seq}`;
+    tasks.set(taskId, { state: "queued", taskType: parsed.taskType, transitions: [{ to: "queued", at: new Date().toISOString() }] });
+    res.writeHead(202, { "content-type": "application/json" });
+    res.end(JSON.stringify({ taskId, state: "queued" }));
+    const t = tasks.get(taskId)!;
+    t.state = "running";
+    t.transitions.push({ to: "running", at: new Date().toISOString() });
+    try {
+      const result = await executeTask(taskId, parsed.taskType, parsed.payload ?? {});
+      t.state = result.state;
+      t.output = result.output;
+      t.error = result.error;
+    } catch (e) {
+      t.state = "failed";
+      t.error = (e as Error).message;
+    }
+    t.transitions.push({ to: t.state, at: new Date().toISOString() });
+    return;
+  }
+  const m = url.pathname.match(/^\/tasks\/([^/]+)$/);
+  if (req.method === "GET" && m) {
+    const t = tasks.get(decodeURIComponent(m[1]!));
+    if (!t) {
+      res.writeHead(404, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ error: "not found" }));
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ id: m[1], state: t.state, taskType: t.taskType, transitions: t.transitions, output: t.output, error: t.error }));
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(PORT, () => console.log(`[local-supervisor] :${PORT} (agent: ${agent.name})`));
+
+
+// src/registries.ts
+// Registry clients. No-key registries first; each returns normalized candidates.
+
+export type Candidate = {
+  key: string;
+  country: string;
+  name: string;
+  sic?: string;
+  incorporated?: string;
+  city?: string;
+  officers: string[];
+  source: string;
+  source_url?: string;
+  website?: string;
+  status_note?: string;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ── France: recherche-entreprises.api.gouv.fr (open JSON API) ──────────────
+
+type FrResult = {
+  siren: string;
+  nom_complet?: string;
+  nom_raison_sociale?: string;
+  sigle?: string;
+  activite_principale?: string;
+  date_creation?: string;
+  date_fermeture?: string | null;
+  dirigeants?: Array<{ nom?: string; prenoms?: string; quality?: string }>;
+  siege?: { code_postal?: string; libelle_commune?: string };
+};
+
+export async function frSearch(
+  query: string,
+  perPage = 10
+): Promise<Candidate[]> {
+  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(query)}&per_page=${perPage}`;
+  const res = await fetch(url, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`FR search ${res.status}`);
+  const data = (await res.json()) as { results?: FrResult[] };
+  return (data.results ?? [])
+    .filter((r) => r.date_fermeture == null)
+    .map((r) => ({
+      key: `fr-${r.siren}`,
+      country: "fr",
+      name: r.nom_complet || r.nom_raison_sociale || r.sigle || `SIREN ${r.siren}`,
+      sic: r.activite_principale,
+      incorporated: r.date_creation,
+      city: r.siege?.libelle_commune,
+      officers: (r.dirigeants ?? [])
+        .map((d) => [d.prenoms, d.nom].filter(Boolean).join(" "))
+        .filter(Boolean)
+        .slice(0, 5),
+      source: "recherche-entreprises.api.gouv.fr",
+      source_url: `https://www.insee.fr/fr/recherche/sirene/${r.siren}`,
+    }));
+}
+
+// ── UK: Companies House advanced search (needs COMPANIES_HOUSE_KEY) ────────
+
+type UkResult = {
+  company_number: string;
+  title?: string;
+  registered_office_address?: { locality?: string; premises?: string };
+  company_status?: string;
+  sic_codes?: string[];
+  incorporated_on?: string;
+};
+
+export async function ukSearch(
+  query: string,
+  apiKey: string,
+  limit = 10
+): Promise<Candidate[]> {
+  const url = `https://api.companieshouse.gov.uk/advanced-search/companies?q=${encodeURIComponent(query)}&items_per_page=${limit}&include_officers=false`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("UK: COMPANIES_HOUSE_KEY invalid");
+  }
+  if (!res.ok) throw new Error(`UK search ${res.status}`);
+  const data = (await res.json()) as { items?: UkResult[] };
+  return (data.items ?? [])
+    .filter((r) => (r.company_status ?? "") !== "dissolved")
+    .map((r) => ({
+      key: `uk-${r.company_number}`,
+      country: "uk",
+      name: r.title || `Company ${r.company_number}`,
+      sic: r.sic_codes?.[0],
+      incorporated: r.incorporated_on,
+      city: r.registered_office_address?.locality,
+      officers: [],
+      source: "companieshouse.gov.uk",
+      source_url: `https://find-and-update.company-information.service.gov.uk/company/${r.company_number}`,
+    }));
+}
+
+// ── Estonia: e-Äriregister HTML search (crawled with Cheerio) ───────────────
+
+export function eeSearchUrl(query: string): string {
+  return `https://ariregister.rik.ee/eng/company_search?phrase=${encodeURIComponent(query)}`;
+}
+
+export function parseEeResults(html: string): Candidate[] {
+  const out: Candidate[] = [];
+  const rowRe = /<tr[^>]*>[\s\S]*?<\/tr>/g;
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(html)) !== null) {
+    const row = m[0];
+    const nameM = row.match(/class="[^"]*name[^"]*"[^>]*>([^<]{3,120})/i) || row.match(/>([A-ZÄÖÜ0-9][^<]{3,119})</);
+    const regM = row.match(/(\d{7})/);
+    if (!nameM || !regM) continue;
+    const name = nameM[1].trim();
+    if (!name || name.toLowerCase().startsWith("search")) continue;
+    out.push({
+      key: `ee-${regM[1]}`,
+      country: "ee",
+      name,
+      officers: [],
+      source: "ariregister.rik.ee",
+      source_url: `https://ariregister.rik.ee/eng/company/${regM[1]}`,
+    });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+// ── UK (no key): Companies House public HTML, two-stage crawl ──────────────
+// Stage 1: search results page (server-rendered) → company numbers + names.
+// Stage 2: company detail page → status / SIC / incorporation date.
+
+export function ukSearchUrl(query: string, page = 1): string {
+  return `https://find-and-update.company-information.service.gov.uk/search?q=${encodeURIComponent(query)}${page > 1 ? `&starting=${page * 20}` : ""}`;
+}
+
+export type UkCard = {
+  number: string;
+  name: string;
+  incorporated?: string;
+  city?: string;
+};
+
+export function parseUkSearch(html: string): UkCard[] {
+  const out: UkCard[] = [];
+  const blocks = html.split('<li class="type-company">').slice(1);
+  for (const b of blocks) {
+    const linkM = b.match(/href="\/company\/([0-9A-Z]{5,12})"[\s\S]*?<a[^>]*>([^<]{3,120})<\/a>/) || b.match(/<a class="govuk-link" href="\/company\/([0-9A-Z]{5,12})"[^>]*>\s*([^<]+?)\s*<\/a>/);
+    if (!linkM) continue;
+    const number = linkM[1];
+    const name = linkM[2].trim();
+    const metaM = b.match(/meta crumbtrail[^>]*>\s*([0-9A-Z]{5,12})\s*-\s*Incorporated on\s*([^<]+?)\s*</);
+    const addrM = b.match(/<p>([^<]{5,120})<\/p>/);
+    out.push({
+      number,
+      name,
+      incorporated: metaM?.[2]?.trim(),
+      city: addrM?.[1]?.split(",").slice(-2, -1)[0]?.trim(),
+    });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+export type UkDetail = { status: string; sic: string | null; incorporated: string | null };
+
+export function parseUkDetail(html: string): UkDetail {
+  const statusBlock = html.match(/id="company-status"[\s\S]{0,200}?>([A-Za-z][A-Za-z ]{2,40})</);
+  const sicBlock = html.match(/id="sic0"[\s\S]{0,100}?>([0-9]{5})\s*-\s*([^<]{3,80})</);
+  const incBlock = html.match(/Incorporated on[\s\S]{0,400}?>([0-9]{1,2}\s+[A-Z][a-z]+ \d{4})</);
+  return {
+    status: statusBlock ? statusBlock[1].trim() : "",
+    sic: sicBlock ? sicBlock[1] : null,
+    incorporated: incBlock ? incBlock[1].trim() : null,
+  };
+}
+
+// ── Ireland: CRO open-data register (opendata.cro.ie, refreshed monthly) ───
+// 180k+ companies with status, registration date, county and NACE code.
+// The official cro.ie search UI is Cloudflare-walled; the open-data CSV is
+// the sanctioned bulk source.
+
+import AdmZip from "adm-zip";
+
+const CRO_CSV_URL =
+  "https://opendata.cro.ie/dataset/bf6f837d-0946-4c14-9a99-82cd6980c121/resource/3fef41bc-b8f4-4b10-8434-ce51c29b1bba/download/companies.csv.zip";
+
+// NACE 2-digit sections that match small businesses with automation surface.
+const IE_TARGET_NACE = new Set(["58", "59", "61", "62", "63", "73", "74"]);
+
+type CsvRow = Record<string, string>;
+
+/** Minimal streaming RFC-4180 row parser (handles quoted commas). */
+export function csvRows(line: string): CsvRow | null {
+  const cells: string[] = [];
+  let cur = "";
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false;
+      } else cur += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ",") { cells.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  cells.push(cur);
+  return cells.length > 1 ? (Object.fromEntries(cells.map((c, i) => [String(i), c])) as CsvRow) : null;
+}
+
+export async function ieSearch(
+  dataDir: string,
+  opts: { maxAgeDays?: number; limit?: number } = {}
+): Promise<Candidate[]> {
+  const { maxAgeDays = 7, limit = 12 } = opts;
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const csvPath = path.join(dataDir, "cro-companies.csv");
+
+  // Cache the extracted CSV on the volume (rootfs is ephemeral).
+  const fresh =
+    fs.existsSync(csvPath) &&
+    Date.now() - (fs.statSync(csvPath).mtimeMs ?? 0) < maxAgeDays * 86400_000;
+  if (!fresh) {
+    const zipPath = path.join(dataDir, "cro-companies.csv.zip");
+    const res = await fetch(CRO_CSV_URL);
+    if (!res.ok) throw new Error(`CRO download ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!fresh) fs.writeFileSync(zipPath, buf);
+    const zip = new AdmZip(zipPath);
+    const entry = zip.getEntries().find((e) => e.entryName.endsWith(".csv"));
+    if (!entry) throw new Error("CRO zip missing csv");
+    fs.writeFileSync(csvPath, entry.getData());
+  }
+
+  const yearsCutoff = `${new Date(Date.now() - 3 * 365 * 86400_000).toISOString().slice(0, 10)}`;
+  const picked: Candidate[] = [];
+  const seenNace = new Map<string, number>();
+  let i = 0;
+  const lines = fs.readFileSync(csvPath, "utf8").split("\n");
+  const header = lines[0].split(",").map((h) => h.trim());
+  const col = (name: string) => header.indexOf(name);
+  const cNum = col("company_num"), cName = col("company_name"), cStatus = col("company_status");
+  const cType = col("company_type"), cReg = col("company_reg_date"), cAddr4 = col("company_address_4");
+  const cNace = col("nace_v2_code");
+  for (let li = 1; li < lines.length && picked.length < limit * 4; li++) {
+    const line = lines[li];
+    if (!line) continue;
+    const cells: string[] = [];
+    let cur = "";
+    let inQ = false;
+    for (let ci = 0; ci < line.length; ci++) {
+      const ch = line[ci];
+      if (inQ) {
+        if (ch === '"') { if (line[ci + 1] === '"') { cur += '"'; ci++; } else inQ = false; } else cur += ch;
+      } else if (ch === '"') inQ = true;
+      else if (ch === ",") { cells.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    cells.push(cur);
+    const status = (cells[cStatus] ?? "").trim();
+    if (status !== "Normal") continue;
+    const reg = cells[cReg] ?? "";
+    if (!reg || reg < yearsCutoff) continue;
+    const nace = (cells[cNace] ?? "").slice(0, 2);
+    if (!IE_TARGET_NACE.has(nace)) continue;
+    const perNace = seenNace.get(nace) ?? 0;
+    if (perNace >= Math.ceil(limit / 4)) continue; // spread across verticals
+    seenNace.set(nace, perNace + 1);
+    const name = (cells[cName] ?? "").trim();
+    const num = cells[cNum] ?? String(i);
+    if (!name || name.length < 4) continue;
+    i += 1;
+    picked.push({
+      key: `ie-${num}`,
+      country: "ie",
+      name,
+      sic: nace,
+      incorporated: reg,
+      city: (cells[cAddr4] ?? "").split(",")[0]?.trim() || undefined,
+      officers: [],
+      source: "opendata.cro.ie (CRO register)",
+      source_url: `https://www.cro.ie/company-details/${num}`,
+    });
+    if (picked.length >= limit * 4) break;
+  }
+  return picked.slice(0, limit);
+}
+
+// ── PT: no open registry reachable (data.gov.pt unreachable from this ──────
+// network, DR JS-rendered, OpenCorporates paywalled) → Brave web discovery
+// scoped to .pt, followed by the shared site-crawl phase for contacts.
+
+export function domainToName(host: string, titleHint?: string): string {
+  if (titleHint) {
+    const first = titleHint.split(/\s*[|–—•]\s*/)[0].trim();
+    // Only trust short, plain title fragments as names.
+    if (first.length >= 4 && first.length <= 40 && /\s/.test(first) && !/\d{4}/.test(first)) {
+      return first;
+    }
+  }
+  const base = host.replace(/^www\./, "").split(".")[0] || host;
+  const tldWords = ["co", "uk", "ie", "pt", "com", "org", "net"];
+  const parts = host.replace(/^www\./, "").split(".").filter((p) => !tldWords.includes(p.toLowerCase()));
+  const raw = (parts.join(" ") || base)
+    .replace(/[-_+]/g, " ")
+    .replace(/\d{2,}/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!raw) return host;
+  return raw
+    .split(" ")
+    .map((w) => (w.length > 2 ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+export const REGISTRY_QUERIES: Record<string, string[]> = {
+  fr: ["agence web", "développement web", "consultant digital", "studio création", "agence marketing digital"],
+  uk: ["web development agency", "digital marketing agency", "software consultancy"],
+  ee: ["võrguarendus", "tarkvara", "digital agency"],
+  ie: ["web design agency site:.ie", "software company Dublin site:.ie", "digital marketing agency site:.ie"],
+  pt: ["agência web site:.pt", "desenvolvimento de software site:.pt", "agência digital marketing site:.pt"],
+};
+
+export { sleep };
+
+
+// src/server.ts
+// Core agent: lead discovery (Crawlee) + jev classification + Brave research.
+//
+// Task flow (driven by the edge agent over the supervisor protocol):
+//   scrape   → registries (FR/EE/PT/UK) → website discovery (Brave) → site crawl (Crawlee) → sqlite
+//   research → jev classify → Brave + LLM "what AI agents does this business need" → push to edge
+
+import { createCoreAgent, defineTaskHandler } from "@agentdeploy-io/core-sdk";
+import type { TaskContext } from "@agentdeploy-io/core-sdk";
+import { z } from "zod";
+import { CheerioCrawler, Request } from "crawlee";
+import {
+  frSearch, ukSearch, eeSearchUrl, parseEeResults, ieSearch,
+  ukSearchUrl, parseUkSearch, parseUkDetail,
+  REGISTRY_QUERIES, sleep, type Candidate,
+} from "./registries.js";
+import { braveWebSearch, pickWebsite, crawlSite, webDiscover } from "./discover.js";
+import { sicHint } from "./extract.js";
+
+type LeadRow = {
+  key: string;
+  country: string;
+  name: string;
+  sic: string | null;
+  sic_label: string | null;
+  incorporated: string | null;
+  city: string | null;
+  officers: string;
+  website: string | null;
+  emails: string;
+  phones: string;
+  socials: string;
+  source: string;
+  source_url: string | null;
+  discovered_at: string;
+  stage: string;
+  classification: string | null;
+  research: string | null;
+};
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS leads (
+  key TEXT PRIMARY KEY,
+  country TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sic TEXT, sic_label TEXT,
+  incorporated TEXT,
+  city TEXT,
+  officers TEXT,
+  website TEXT,
+  emails TEXT,
+  phones TEXT,
+  socials TEXT,
+  source TEXT,
+  source_url TEXT,
+  discovered_at TEXT,
+  stage TEXT DEFAULT 'raw',
+  classification TEXT,
+  research TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_leads_stage ON leads(stage);
+CREATE INDEX IF NOT EXISTS idx_leads_country ON leads(country);
+`;
+
+const scrapeHandler = defineTaskHandler({
+  description: "Discover businesses from public registries, find their websites (Brave), crawl sites for contacts (Crawlee), store enriched leads.",
+  inputSchema: z.object({
+    countries: z.array(z.enum(["uk", "fr", "ee", "pt", "ie"])).optional(),
+    queries: z.record(z.string(), z.array(z.string())).optional(),
+    limit: z.number().int().min(1).max(200).default(40),
+  }),
+
+  async execute(input, ctx) {
+    const braveKey = ctx.secrets.has("BRAVE_API_KEY") ? ctx.secrets.get("BRAVE_API_KEY") : (process.env.BRAVE_API_KEY || "");
+    const chKey = ctx.secrets.has("COMPANIES_HOUSE_KEY") ? ctx.secrets.get("COMPANIES_HOUSE_KEY") : (process.env.COMPANIES_HOUSE_KEY || "");
+    const countries = input.countries ?? ["uk", "ie", "pt", "fr", "ee"];
+    const limit = input.limit;
+
+    const skipped: string[] = [];
+    if (!chKey) skipped.push("uk:using public HTML crawl (no COMPANIES_HOUSE_KEY)");
+    if (!braveKey) skipped.push("ie/pt:Brave discovery needs BRAVE_API_KEY");
+
+    // Phase 1 — registry candidates
+    const candidates = new Map<string, Candidate>();
+    for (const country of countries) {
+      if (country === "ie") {
+        // Full-register scan — no queries; vertical + recency filters inside.
+        try {
+          const dataDir = process.env.DATA_DIR || "/data";
+          const found = await ieSearch(dataDir, { limit: 12 });
+          for (const c of found) if (!candidates.has(c.key)) candidates.set(c.key, c);
+          ctx.reportProgress("registry", { country: "ie", query: "full register (NACE-filtered)", found: found.length, total: candidates.size });
+        } catch (e) {
+          console.warn(`[scrape] ie: ${(e as Error).message}`);
+        }
+        continue;
+      }
+      const queries = (input.queries?.[country] ?? REGISTRY_QUERIES[country] ?? []).slice(0, 3);
+      if (queries.length === 0) continue;
+      for (const q of queries) {
+        try {
+          let found: Candidate[] = [];
+          if (country === "fr") {
+            found = await frSearch(q, 8);
+          } else if (country === "uk") {
+            if (chKey) {
+              found = await ukSearch(q, chKey, 8);
+            } else {
+              found = await ukHtmlCrawl(q); // Companies House public HTML
+            }
+          } else if (country === "pt") {
+            // No open registry reachable — Brave discovery scoped to .pt.
+            const sites = braveKey ? await webDiscover(q, country, braveKey, 5) : [];
+            for (const s of sites) {
+              found.push({
+                key: `pt-web-${s.domain.replace(/[^a-z0-9]/gi, "").slice(0, 32)}`,
+                country: "pt",
+                name: s.name,
+                website: `https://${s.domain}`,
+                officers: [],
+                source: "brave-web-discovery",
+              });
+            }
+          } else if (country === "ee") {
+            const res = await fetch(eeSearchUrl(q), { headers: { accept: "text/html" } });
+            if (res.ok) found = parseEeResults(await res.text());
+          }
+          for (const c of found) {
+            if (!candidates.has(c.key)) candidates.set(c.key, c);
+          }
+          ctx.reportProgress("registry", { country, query: q, found: found.length, total: candidates.size });
+          await sleep(500);
+        } catch (e) {
+          console.warn(`[scrape] ${country} "${q}": ${(e as Error).message}`);
+        }
+      }
+    }
+
+    // Distribute the limit across countries that produced candidates.
+    const byCountry = new Map<string, Candidate[]>();
+    for (const c of candidates.values()) {
+      const arr = byCountry.get(c.country) ?? [];
+      arr.push(c);
+      byCountry.set(c.country, arr);
+    }
+    const quota = Math.ceil(limit / Math.max(1, byCountry.size));
+    const picked: Candidate[] = [];
+    for (const arr of byCountry.values()) picked.push(...arr.slice(0, quota));
+    picked.sort(() => 0.5 - Math.random()); // shuffle so one country can't dominate
+    const pickedFinal = picked.slice(0, limit);
+
+    ctx.reportProgress("discovered", { candidates: candidates.size, picked: picked.length });
+
+    // Phase 2 — persist raw leads
+    const now = new Date().toISOString();
+    for (const c of pickedFinal) {
+      ctx.sql.run(
+        "INSERT OR IGNORE INTO leads (key, country, name, sic, sic_label, incorporated, city, officers, website, source, source_url, discovered_at, stage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'raw')",
+        c.key, c.country, c.name, c.sic ?? null, sicHint(c.sic) ?? null, c.incorporated ?? null, c.city ?? null, JSON.stringify(c.officers), c.website ?? null, c.source, c.source_url ?? null, now
+      );
+    }
+
+    // Phase 3 — website discovery (Brave) + Phase 4 — site crawl (Crawlee)
+    let withWebsite = 0;
+    let withEmail = 0;
+    if (braveKey) {
+      for (const c of pickedFinal) {
+        const row = ctx.sql.get<LeadRow>("SELECT * FROM leads WHERE key = ?", c.key);
+        if (row?.website) {
+          withWebsite += 1;
+          continue;
+        }
+        try {
+          const q = `${c.name}${c.city ? ` ${c.city}` : ""}`.slice(0, 120);
+          const results = await braveWebSearch(q, { apiKey: braveKey, country: c.country }, 5);
+          const website = pickWebsite(results, c.name);
+          if (website) {
+            ctx.sql.run("UPDATE leads SET website = ? WHERE key = ?", website, c.key);
+            withWebsite += 1;
+          }
+          await sleep(1100); // Brave free tier pacing
+        } catch (e) {
+          console.warn(`[discovery] ${c.key}: ${(e as Error).message}`);
+        }
+      }
+    } else {
+      skipped.push("site-discovery:no BRAVE_API_KEY");
+    }
+
+    const toCrawl = ctx.sql
+      .all<{ key: string; country: string; website: string }>(
+        "SELECT key, country, website FROM leads WHERE stage = 'raw' AND website IS NOT NULL AND website != ''"
+      )
+      .slice(0, limit);
+
+    for (const lead of toCrawl) {
+      const contacts = await crawlSite(lead.website, lead.country);
+      if (contacts && (contacts.emails.length > 0 || contacts.phones.length > 0)) {
+        ctx.sql.run(
+          "UPDATE leads SET emails = ?, phones = ?, socials = ?, stage = 'enriched' WHERE key = ?",
+          JSON.stringify(contacts.emails), JSON.stringify(contacts.phones), JSON.stringify(contacts.socials), lead.key
+        );
+      } else {
+        ctx.sql.run("UPDATE leads SET stage = 'enriched' WHERE key = ?", lead.key);
+      }
+      if (contacts?.emails.length) withEmail += 1;
+      ctx.reportProgress("crawl", { done: toCrawl.indexOf(lead) + 1, total: toCrawl.length, withEmail });
+    }
+
+    // Leads without a website stay 'enriched' too (jev can still classify them).
+    ctx.sql.run("UPDATE leads SET stage = 'enriched' WHERE stage = 'raw'");
+
+    const counts = ctx.sql.get<{ raw: number; enriched: number; total: number }>(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN stage = 'enriched' THEN 1 ELSE 0 END) AS enriched, SUM(CASE WHEN stage = 'raw' THEN 1 ELSE 0 END) AS raw FROM leads"
+    );
+
+    return {
+      state: "succeeded",
+      output: {
+        discovered: pickedFinal.length,
+        candidates: candidates.size,
+        withWebsite,
+        withEmail,
+        enriched: counts?.enriched ?? 0,
+        total: counts?.total ?? 0,
+        skipped,
+      },
+    };
+  },
+});
+
+const researchHandler = defineTaskHandler({
+  description: "Classify enriched leads with the jev worker, then research HOT/WARM leads via Brave + LLM to determine which AI agents the business would need. Pushes results to the edge agent.",
+  inputSchema: z.object({
+    classifyLimit: z.number().int().min(1).max(50).default(25),
+    researchLimit: z.number().int().min(1).max(25).default(10),
+    tiers: z.array(z.enum(["HOT", "WARM"])).default(["HOT", "WARM"]),
+  }),
+
+  async execute(input, ctx) {
+    const jevUrl = process.env.AD_JEV_URL || "";
+    const braveKey = ctx.secrets.has("BRAVE_API_KEY") ? ctx.secrets.get("BRAVE_API_KEY") : (process.env.BRAVE_API_KEY || "");
+    const callback = process.env.AD_EDGE_CALLBACK_URL || "";
+    const syncSecret = process.env.AD_SYNC_SECRET || "";
+
+    // Step 1 — jev classification
+    let classified = 0;
+    const pending = ctx.sql
+      .all<LeadRow>("SELECT * FROM leads WHERE stage = 'enriched' AND classification IS NULL ORDER BY rowid DESC LIMIT ?", input.classifyLimit);
+    if (pending.length > 0) {
+      if (!jevUrl) {
+        throw new Error("AD_JEV_URL not configured — cannot classify");
+      }
+      const res = await fetch(`${jevUrl.replace(/\/$/, "")}/v1/classify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leads: pending.map((l) => ({
+            key: l.key, name: l.name, country: l.country, sic: l.sic ?? undefined,
+            incorporated: l.incorporated ?? undefined,
+            officers: safeJson(l.officers, []),
+            website: l.website ?? undefined,
+            emails: safeJson(l.emails, []),
+          })),
+          context: { focus: "AI agents for small business" },
+        }),
+      });
+      if (!res.ok) throw new Error(`jev classify ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const data = (await res.json()) as { classifications: any[] };
+      for (const c of data.classifications) {
+        ctx.sql.run("UPDATE leads SET classification = ?, stage = 'classified' WHERE key = ?", JSON.stringify(c), c.key);
+        classified += 1;
+      }
+    }
+
+    // Step 2 — Brave + LLM research for top tiers
+    let researched = 0;
+    const hotWarm = ctx.sql
+      .all<LeadRow>(
+        `SELECT * FROM leads
+         WHERE stage = 'classified' AND research IS NULL
+           AND json_extract(classification, '$.tier') IN (${input.tiers.map(() => "?").join(",")})
+         ORDER BY json_extract(classification, '$.fit') DESC
+         LIMIT ?`,
+        ...input.tiers, input.researchLimit
+      );
+
+    for (const lead of hotWarm) {
+      const cls = safeJson(lead.classification, {}) as any;
+      const vertical = cls.vertical || sicHint(lead.sic ?? undefined) || "small business";
+      let sources: Array<{ title: string; url: string; description: string }> = [];
+      let snippets: string[] = [];
+      if (braveKey) {
+        try {
+          const q = `"${lead.name}" ${vertical}`.slice(0, 150);
+          sources = (await braveWebSearch(q, { apiKey: braveKey, country: lead.country }, 5)).slice(0, 4);
+          snippets = sources.slice(0, 3).map((s) => `${s.title}: ${s.description}`).join("\n").slice(0, 2500);
+          await sleep(1100);
+        } catch (e) {
+          console.warn(`[research] brave ${lead.key}: ${(e as Error).message}`);
+        }
+      }
+      const synthesis = await synthesizeAgents(ctx, lead, cls, vertical, sources, snippets);
+      ctx.sql.run(
+        "UPDATE leads SET research = ?, stage = 'researched' WHERE key = ?",
+        JSON.stringify(synthesis), lead.key
+      );
+      researched += 1;
+      ctx.reportProgress("research", { done: researched, total: hotWarm.length, lead: lead.key });
+    }
+
+    // Step 3 — push classified/researched leads to the edge agent
+    let pushed = 0;
+    if (callback && syncSecret) {
+      const rows = ctx.sql.all<LeadRow>(
+        "SELECT * FROM leads WHERE stage IN ('classified', 'researched') ORDER BY rowid DESC LIMIT 200"
+      );
+      try {
+        const pres = await fetch(`${callback.replace(/\/$/, "")}/inbound/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-AD-Sync": syncSecret },
+          body: JSON.stringify({
+            deployment_id: ctx.deploymentId,
+            pushed_at: new Date().toISOString(),
+            leads: rows,
+          }),
+        });
+        if (pres.ok) pushed = rows.length;
+      } catch (e) {
+        console.warn(`[sync] push failed: ${(e as Error).message}`);
+      }
+    }
+
+    const stats = ctx.sql.get<{ total: number; classified: number; researched: number; hot: number; warm: number }>(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN stage IN ('classified','researched') THEN 1 ELSE 0 END) AS classified,
+              SUM(CASE WHEN stage = 'researched' THEN 1 ELSE 0 END) AS researched,
+              SUM(CASE WHEN json_extract(classification,'$.tier') = 'HOT' THEN 1 ELSE 0 END) AS hot,
+              SUM(CASE WHEN json_extract(classification,'$.tier') = 'WARM' THEN 1 ELSE 0 END) AS warm
+       FROM leads`
+    );
+
+    return {
+      state: "succeeded",
+      output: {
+        classified,
+        researched,
+        pushed,
+        totals: {
+          total: stats?.total ?? 0,
+          classified: stats?.classified ?? 0,
+          researched: stats?.researched ?? 0,
+          hot: stats?.hot ?? 0,
+          warm: stats?.warm ?? 0,
+        },
+      },
+    };
+  },
+});
+
+/**
+ * UK without an API key: two-stage Crawlee run over the public
+ * Companies House site — search page → company detail pages.
+ */
+async function ukHtmlCrawl(query: string): Promise<Candidate[]> {
+  const out = new Map<string, Candidate>();
+
+  const crawler = new CheerioCrawler({
+    maxConcurrency: 3,
+    maxRequestRetries: 2,
+    useSessionPool: false,
+    // UA set per-request (Crawlee 3 has no crawler-level header option)
+    async requestHandler({ $, request, enqueueLinks }) {
+      const html = $.html() || "";
+      const kind = (request.userData as { kind?: string }).kind;
+      if (kind === "search") {
+        const detailUrls: string[] = [];
+        // DOM parse (attribute order varies between raw HTML and re-serialization).
+        $("li.type-company").each((_, el) => {
+          const $el = $(el);
+          const $a = $el.find("a").first();
+          const href = $a.attr("href") ?? "";
+          const num = (href.match(/\/company\/([0-9A-Z]{5,12})/) ?? [])[1];
+          if (!num) return;
+          const name = $a.text().trim().replace(/&amp;/g, "&");
+          const meta = $el.find(".crumbtrail").last().text().trim();
+          const incM = meta.match(/Incorporated on\s+(.+)/);
+          const addr = $el.find("p").last().text().trim();
+          const parts = addr.split(",").map((x) => x.trim()).filter(Boolean);
+          const notCity = /^(England|Scotland|Wales|Northern Ireland|United Kingdom|UK)$/i;
+          const isPostcode = /[A-Z]{1,2}\d|[A-Z]\d[A-Z]/i;
+          const cityParts = parts.filter((p) => !notCity.test(p) && !isPostcode.test(p));
+          const city = cityParts.length > 1 ? cityParts[cityParts.length - 1] : undefined;
+          const c: Candidate = {
+            key: `uk-${num}`,
+            country: "uk",
+            name,
+            incorporated: incM?.[1]?.trim(),
+            city,
+            officers: [],
+            source: "companieshouse.gov.uk (public HTML)",
+            source_url: `https://find-and-update.company-information.service.gov.uk/company/${num}`,
+          };
+          if (!out.has(c.key)) out.set(c.key, c);
+          detailUrls.push(c.source_url!);
+        });
+        // Enqueue only the parsed company pages (never "all" page links).
+        if (detailUrls.length > 0) {
+          await enqueueLinks({
+            urls: detailUrls.slice(0, 6),
+            userData: { kind: "detail" },
+            headers: UA,
+          });
+        }
+      } else if (kind === "detail") {
+        const number = (request.url.match(/\/company\/([0-9A-Z]{5,12})/) ?? [])[1] ?? "";
+        const d = parseUkDetail(html);
+        const c = out.get(`uk-${number}`);
+        if (c) {
+          if (d.sic) c.sic = d.sic;
+          if (d.incorporated && !c.incorporated) c.incorporated = d.incorporated;
+          if (d.status && d.status !== "Active") out.delete(`uk-${number}`);
+        }
+      }
+    },
+  });
+
+  const UA = { "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" };
+  await crawler.run([new Request({ url: ukSearchUrl(query, 1), headers: UA, userData: { kind: "search" } })]);
+  return [...out.values()].slice(0, 12);
+}
+
+function safeJson<T>(s: string | null, fallback: T): T {
+  if (!s) return fallback;
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function synthesizeAgents(
+  ctx: TaskContext,
+  lead: LeadRow,
+  cls: any,
+  vertical: string,
+  sources: Array<{ title: string; url: string; description: string }>,
+  snippets: string
+): Promise<Record<string, unknown>> {
+  const system = `You are a business AI-opportunity analyst. Given a company record, its classification and web-search evidence,
+determine which AI AGENTS (autonomous AI workers) this specific business would most likely need to save time or make money.
+Be concrete and business-specific — not generic.
+Respond ONLY with JSON: {"ai_agents_needed":[{"agent":string,"purpose":string,"pain_point":string,"priority":"high"|"medium"|"low"}],"pitch_angle":string,"confidence":"high"|"medium"|"low","notes":string}
+- ai_agents_needed: 2-4 items. "agent" = a short agent name (e.g. "Quote-follower agent"), "purpose" = what it does, "pain_point" = the concrete problem it removes, "priority" = ranked.
+- pitch_angle: one sentence a salesperson could open with, in the business's language (${cls.language || "en"}).
+- Judge only from the provided evidence; if evidence is thin, say confidence "low".`;
+  const user = [
+    `Company: ${lead.name} (${lead.country})`,
+    `Vertical: ${cls.vertical_detail || vertical}`,
+    `SIC: ${lead.sic || "n/a"} ${lead.sic_label ? `(${lead.sic_label})` : ""}`,
+    `Incorporated: ${lead.incorporated || "unknown"}`,
+    `City: ${lead.city || "unknown"}`,
+    `Website: ${lead.website || "none found"}`,
+    `Officers: ${(safeJson(lead.officers, [] as string[]) as string[]).join(", ") || "n/a"}`,
+    `Signals: ${(cls.signals || []).join("; ")}`,
+    ``,
+    `Web evidence:`,
+    sources.length > 0 ? sources.map((s) => `- ${s.title} — ${s.url}`).join("\n") : "- none",
+    snippets ? `Descriptions:\n${snippets}` : "",
+  ].filter(Boolean).join("\n");
+
+  try {
+    const raw = await ctx.gateway.chat([
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ]);
+    const m = raw.match(/\{[\s\S]*\}/);
+    const parsed = m ? JSON.parse(m[0]) : null;
+    if (parsed && Array.isArray(parsed.ai_agents_needed)) {
+      return {
+        ...parsed,
+        sources: sources.slice(0, 4).map((s) => s.url),
+        researched_at: new Date().toISOString(),
+      };
+    }
+    return { ai_agents_needed: [], pitch_angle: "", confidence: "low", notes: raw.slice(0, 300), sources: sources.slice(0, 4).map((s) => s.url), researched_at: new Date().toISOString() };
+  } catch (e) {
+    return { ai_agents_needed: [], pitch_angle: "", confidence: "low", notes: `synthesis failed: ${(e as Error).message}`.slice(0, 200), sources: sources.slice(0, 4).map((s) => s.url), researched_at: new Date().toISOString() };
+  }
+}
+
+export default createCoreAgent({
+  name: "lead-scraper",
+  description: "Registry discovery + site crawling (Crawlee) + jev classification + Brave research pipeline for the Business Intelligence agent.",
+
+  taskHandlers: {
+    scrape: scrapeHandler,
+    research: researchHandler,
+  },
+
+  async onStart(ctx) {
+    ctx.sql.exec(SCHEMA);
+  },
+});
+
+
+// storage/key_value_stores/default/SDK_CRAWLER_STATISTICS_0.json
+{
+  "requestsFinished": 0,
+  "requestsFailed": 1,
+  "requestsRetries": 1,
+  "requestsFailedPerMinute": 0,
+  "requestsFinishedPerMinute": 0,
+  "requestMinDurationMillis": null,
+  "requestMaxDurationMillis": 0,
+  "requestTotalFailedDurationMillis": 30006,
+  "requestTotalFinishedDurationMillis": 0,
+  "crawlerStartedAt": "2026-10-01T13:35:25.723Z",
+  "crawlerFinishedAt": "2026-10-01T13:36:25.782Z",
+  "statsPersistedAt": "2026-10-01T13:36:25.782Z",
+  "crawlerRuntimeMillis": 60079,
+  "crawlerLastStartTimestamp": 1790861725703,
+  "requestRetryHistogram": [
+    null,
+    1
+  ],
+  "statsId": "0",
+  "requestAvgFailedDurationMillis": 30006,
+  "requestAvgFinishedDurationMillis": null,
+  "requestTotalDurationMillis": 30006,
+  "requestsTotal": 1,
+  "requestsWithStatusCode": {},
+  "errors": {
+    "/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74": {
+      "missing error code": {
+        "Error": {
+          "request timed out after 30 seconds.": {
+            "count": 1
+          }
+        }
+      }
+    }
+  },
+  "retryErrors": {
+    "/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74": {
+      "missing error code": {
+        "Error": {
+          "request timed out after 30 seconds.": {
+            "count": 1
+          }
+        }
+      }
+    }
+  }
+}
+
+// storage/request_queues/default/nnmbIp04kiOpO8I.json
+{
+	"id": "nnmbIp04kiOpO8I",
+	"json": "{\"id\":\"nnmbIp04kiOpO8I\",\"url\":\"https://find-and-update.company-information.service.gov.uk/search?q=web%20development%20agency\",\"uniqueKey\":\"https://find-and-update.company-information.service.gov.uk/search?q=web+development+agency\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":1,\"errorMessages\":[\"Error: request timed out after 30 seconds.\\n    at fire (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74)\\n    at Timeout._onTimeout (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:115:40)\\n    at listOnTimeout (node:internal/timers:594:17)\\n    at process.processTimers (node:internal/timers:529:7)\",\"Error: request timed out after 30 seconds.\\n    at fire (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74)\\n    at Timeout._onTimeout (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:115:40)\\n    at listOnTimeout (node:internal/timers:594:17)\\n    at process.processTimers (node:internal/timers:529:7)\"],\"headers\":{\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36\"},\"userData\":{\"kind\":\"search\",\"__crawlee\":{\"state\":5}},\"handledAt\":\"2026-10-01T13:36:25.780Z\"}",
+	"method": "GET",
+	"orderNo": null,
+	"retryCount": 1,
+	"uniqueKey": "https://find-and-update.company-information.service.gov.uk/search?q=web+development+agency",
+	"url": "https://find-and-update.company-information.service.gov.uk/search?q=web%20development%20agency"
+}
+
+// tsconfig.json
+{
+  "extends": "../core-sdk/tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+
+

@@ -1,0 +1,305 @@
+/// <reference types="@cloudflare/workers-types" />
+
+import type Database from "better-sqlite3";
+import type { Lead } from "../db/types.js";
+import {
+  updateLead,
+  isBlacklisted,
+  logSentEmail,
+  countSentToday,
+  isPaused,
+  isSendEnabled,
+  isDryRun,
+  getDailyCap,
+  getSetting,
+} from "../db/index.js";
+
+export interface GateResult {
+  proceed: boolean;
+  reason: string;
+  dryRun: boolean;
+  email: string;
+  name: string;
+  subject: string;
+  html: string;
+  statusStr: string;
+}
+
+function escRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function kwMatch(hay: string, kw: string): boolean {
+  let re: RegExp;
+  try {
+    re = new RegExp(`(^|[^a-z0-9\\u00e0-\\u00ff])${escRe(kw)}([^a-z0-9\\u00e0-\\u00ff]|$)`, "i");
+  } catch {
+    return hay.indexOf(kw) >= 0;
+  }
+  return re.test(hay);
+}
+
+function escH(s: string | null | undefined): string {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function getFirstEmail(lead: Lead): string {
+  if (!lead.emails) return "";
+  try {
+    const parsed = JSON.parse(lead.emails);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const first = parsed[0];
+      return first.addr ?? first.email ?? String(first);
+    }
+  } catch {
+    return lead.emails;
+  }
+  return "";
+}
+
+function hasMxOk(lead: Lead): boolean {
+  if (!lead.emails) return false;
+  try {
+    const parsed = JSON.parse(lead.emails);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.some((e: any) => e.mx_ok !== false);
+    }
+  } catch {
+    return true;
+  }
+  return true;
+}
+
+export function runGateStack(
+  db: Database.Database,
+  lead: Lead,
+  env: Record<string, unknown>,
+): GateResult {
+  const settings = {
+    sendEnabled: isSendEnabled(db),
+    dryRun: isDryRun(db),
+    dailyCap: getDailyCap(db),
+  };
+
+  const sentToday = countSentToday(db);
+  const email = getFirstEmail(lead);
+  const name = lead.name;
+  const subject = lead.pitch_subject ?? "";
+  const body = lead.pitch_body ?? "";
+
+  let reason = "";
+
+  if (!lead) {
+    reason = `lead not found`;
+  } else if (lead.status === "opted_out") {
+    reason = "lead has opted out (permanent)";
+  } else if (lead.status === "rejected") {
+    reason = "lead was rejected in review";
+  } else if (lead.status !== "approved" && lead.stage !== "approved") {
+    reason = `lead is not approved yet (status: ${lead.status ?? lead.stage} — run /approve first)`;
+  } else if (!subject || !body) {
+    reason = "lead has no pitch (re-run writer to draft)";
+  } else if (!email) {
+    reason = "no contact address (run /verify first)";
+  } else if (!hasMxOk(lead)) {
+    reason = "email MX check failed";
+  } else if (isPaused(db)) {
+    reason = "agent is paused (run /resume first)";
+  } else if (!settings.sendEnabled) {
+    reason = "sendEnabled is false (set it true in /settings)";
+  } else if (sentToday >= settings.dailyCap) {
+    reason = `daily cap reached (${sentToday}/${settings.dailyCap})`;
+  }
+
+  if (!reason && lead) {
+    const emailDomain = email.split("@")[1] ?? "";
+    const blHit = isBlacklisted(db, {
+      email,
+      domain: emailDomain,
+      company: lead.name,
+    });
+    if (blHit) reason = `blacklisted (/blacklist-remove to clear)`;
+  }
+
+  const blockedSics = String(getSetting(db, "blockedSics") ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const blockedKeywords = String(getSetting(db, "blockedKeywords") ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const maxHeadcount = Number(getSetting(db, "maxHeadcount") ?? 0);
+
+  if (!reason && lead) {
+    const sicVal = String(lead.sic ?? "").toLowerCase();
+    for (const blocked of blockedSics) {
+      if (blocked && sicVal.indexOf(blocked.toLowerCase()) === 0) {
+        reason = `blocked vertical: SIC ${lead.sic ?? ""} matches ${blocked}`;
+        break;
+      }
+    }
+    if (!reason) {
+      const hay = (
+        String(lead.name ?? "") +
+        " " +
+        String(lead.website ?? "") +
+        " " +
+        sicVal
+      ).toLowerCase();
+      for (const kw of blockedKeywords) {
+        if (kw && kwMatch(hay, kw.toLowerCase())) {
+          reason = `blocked keyword: ${kw}`;
+          break;
+        }
+      }
+    }
+    if (!reason && maxHeadcount > 0) {
+      const classification = lead.classification ? JSON.parse(lead.classification) : {};
+      const headcount = Number(classification.headcount ?? 0);
+      if (headcount > maxHeadcount) {
+        reason = `too large: headcount ${headcount} over max ${maxHeadcount}`;
+      }
+    }
+  }
+
+  const proceed = reason === "";
+
+  let html = "";
+  if (lead && body) {
+    const brandName = String(env.BRAND_NAME ?? "");
+    const brandSite = String(env.BRAND_SITE_URL ?? "");
+    const calendly = String(env.CALENDLY_URL ?? "");
+
+    const paras = body.split(/\n\s*\n/);
+    html = '<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#1f2937;line-height:1.65">';
+    for (const para of paras) {
+      if (!para.trim()) continue;
+      html += `<p style="margin:0 0 12px">${escH(para).replace(/\n/g, "<br>")}</p>`;
+    }
+
+    html += '<div style="margin-top:22px;border-top:1px solid #e5e7eb;padding-top:14px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#4b5563;line-height:1.6">';
+    if (brandName) {
+      html += `<span style="font-size:14px;font-weight:600;color:#111827">${escH(brandName)}</span><br>`;
+    }
+    html += "AI outreach agent<br>";
+    const links: string[] = [];
+    if (brandSite) {
+      links.push(`<a href="${escH(brandSite)}" style="color:#2563eb;text-decoration:none">${escH(brandSite.replace(/^https?:\/\//, ""))}</a>`);
+    }
+    if (calendly) {
+      links.push(`<a href="${escH(calendly)}" style="color:#2563eb;text-decoration:none">book a call</a>`);
+    }
+    if (links.length) html += links.join(' &nbsp;·&nbsp; ') + "<br>";
+    html += `<div style="margin-top:12px;font-size:11.5px;color:#9ca3af">You are receiving this because ${escH(lead.name)} matched the business profile we are reaching out to in ${escH(lead.country.toUpperCase())}. Reply <b>STOP</b> to opt out.</div>`;
+    html += "</div></div>";
+  }
+
+  return {
+    proceed,
+    reason,
+    dryRun: settings.dryRun,
+    email: proceed && !settings.dryRun ? email : "",
+    name,
+    subject,
+    html,
+    statusStr: proceed
+      ? settings.dryRun
+        ? "dry-run"
+        : "queued"
+      : `blocked:${reason}`,
+  };
+}
+
+async function sendViaBrevo(
+  to: string,
+  name: string,
+  subject: string,
+  html: string,
+  env: Record<string, unknown>,
+): Promise<{ messageId: string }> {
+  const apiKey = env.BREVO_API_KEY as string;
+  const senderEmail = String(env.BREVO_SENDER_EMAIL ?? "noreply@example.com");
+  const senderName = String(env.BRAND_NAME ?? "Outreach");
+
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+    },
+    body: JSON.stringify({
+      sender: { name: senderName, email: senderEmail },
+      to: [{ email: to, name }],
+      subject,
+      htmlContent: html,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Brevo ${res.status}: ${text.slice(0, 200)}`);
+  }
+
+  const data = (await res.json()) as { messageId?: string };
+  return { messageId: data.messageId ?? "" };
+}
+
+export async function runOutreach(
+  db: Database.Database,
+  lead: Lead,
+  env: Record<string, unknown>,
+): Promise<GateResult> {
+  const gate = runGateStack(db, lead, env);
+
+  if (!gate.proceed) return gate;
+
+  if (gate.dryRun) {
+    logSentEmail(db, {
+      lead_key: lead.key,
+      email: getFirstEmail(lead),
+      subject: gate.subject,
+      message_id: null,
+      status: "dry-run",
+      at: new Date().toISOString(),
+    });
+    updateLead(db, lead.key, { stage: "sent", status: "sent" });
+    return gate;
+  }
+
+  try {
+    const { messageId } = await sendViaBrevo(
+      gate.email,
+      gate.name,
+      gate.subject,
+      gate.html,
+      env,
+    );
+
+    logSentEmail(db, {
+      lead_key: lead.key,
+      email: gate.email,
+      subject: gate.subject,
+      message_id: messageId,
+      status: "sent",
+      at: new Date().toISOString(),
+    });
+
+    updateLead(db, lead.key, { stage: "sent", status: "sent" });
+
+    return { ...gate, statusStr: "sent" };
+  } catch (e: any) {
+    logSentEmail(db, {
+      lead_key: lead.key,
+      email: gate.email,
+      subject: gate.subject,
+      message_id: null,
+      status: `failed:${e.message}`,
+      at: new Date().toISOString(),
+    });
+    return { ...gate, proceed: false, reason: `send failed: ${e.message}`, statusStr: "failed" };
+  }
+}

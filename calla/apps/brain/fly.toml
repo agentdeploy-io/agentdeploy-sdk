@@ -1,0 +1,15 @@
+app = "calla-brain"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+  context = "../.."
+
+[env]
+  PORT = "3000"
+  NODE_ENV = "production"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 1024

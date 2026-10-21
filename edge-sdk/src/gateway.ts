@@ -81,8 +81,10 @@ export function useGateway(
  * const res = await fetch(url, { ... });
  * ```
  */
-export function gatewayUrl(): string {
-  return AD_GATEWAY_BASE_URL;
+export function gatewayUrl(env?: Record<string, unknown>): string {
+  const runtimeBaseUrl = env?.AD_GATEWAY_BASE_URL as string | undefined;
+  const bare = typeof AD_GATEWAY_BASE_URL !== "undefined" ? AD_GATEWAY_BASE_URL : "";
+  return (runtimeBaseUrl || bare) as string;
 }
 
 /**
@@ -112,8 +114,15 @@ function hasRealGatewayApiKey(envOverride?: Record<string, unknown>): boolean {
  * stays for routing/observability (it is NOT an authenticator).
  */
 export function gatewayHeaders(env?: Record<string, unknown>): Record<string, string> {
+  // AD_DEPLOYMENT_ID is a bare global injected by the platform renderer in
+  // prod; in local `wrangler dev` it is undefined, so access it safely and
+  // fall back to the runtime env (from .dev.vars).
+  const deploymentId =
+    (typeof AD_DEPLOYMENT_ID !== "undefined" ? AD_DEPLOYMENT_ID : undefined) ??
+    (env?.AD_DEPLOYMENT_ID as string | undefined) ??
+    "";
   const headers: Record<string, string> = {
-    "X-AD-Deployment": AD_DEPLOYMENT_ID,
+    "X-AD-Deployment": deploymentId,
     "Content-Type": "application/json",
   };
   if (hasRealGatewayApiKey(env)) {
@@ -144,12 +153,15 @@ const TRANSIENT_GATEWAY_STATUSES = new Set([408, 502, 503, 504, 524]);
 export async function gatewayFetchWithBackoff(
   path: string,
   init: RequestInit,
-  options?: { maxRetries?: number; maxWaitSeconds?: number }
+  options?: { maxRetries?: number; maxWaitSeconds?: number; env?: Record<string, unknown> }
 ): Promise<Response> {
   const maxRetries = options?.maxRetries ?? 1;
   const maxWaitSeconds = options?.maxWaitSeconds ?? 15;
-  const url = `${gatewayUrl()}${path}`;
-  const headers = { ...gatewayHeaders(), ...(init.headers as Record<string, string> | undefined) };
+  const url = `${gatewayUrl(options?.env)}${path}`;
+  const headers = {
+    ...gatewayHeaders(options?.env),
+    ...(init.headers as Record<string, string> | undefined),
+  };
 
   let attempt = 0;
   for (;;) {

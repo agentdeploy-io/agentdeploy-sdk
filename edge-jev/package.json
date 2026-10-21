@@ -1,0 +1,16 @@
+{
+  "name": "edge-jev",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8795",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260930.2",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "calla-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CALLA_EDGE_AGENT", "class_name": "CallaEdgeAgent" },
+      { "name": "CALLA_ORCHESTRATOR", "class_name": "CallaOrchestrator" },
+      { "name": "CALLA_EVENTS", "class_name": "CallaEventHub" },
+      // Binding name MUST equal the class name: the /telnyx/stream bridge
+      // resolves the namespace via env["CallaVoiceAgent"].
+      { "name": "CallaVoiceAgent", "class_name": "CallaVoiceAgent" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CallaEdgeAgent", "CallaOrchestrator", "CallaEventHub"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["CallaVoiceAgent"]
+    }
+  ],
+  // Workers AI (Flux STT + Aura-2 TTS). In wrangler 4.147+ the AI binding is
+  // REMOTE by default: `wrangler dev` needs CF auth (`wrangler login` or
+  // CLOUDFLARE_API_TOKEN) for this worker to boot.
+  "ai": { "binding": "AI", "remote": true },
+  "workflows": [
+    { "name": "calla-approval-workflow", "class_name": "CallaApprovalWorkflow", "binding": "CALLA_APPROVAL_WORKFLOW" }
+  ]
+}

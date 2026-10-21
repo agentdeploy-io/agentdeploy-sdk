@@ -1,0 +1,123 @@
+# Business Intelligence Agent — Hybrid Manifest
+apiVersion: v1
+kind: hybrid-template
+metadata:
+  name: business-intelligence-agent
+  description: "Multi-agent lead generation: Edge orchestrator + Core crawler + jev classifier"
+  version: "1.0.0"
+
+components:
+  edge:
+    kind: cloudflare-worker
+    name: bi-edge
+    runtime: edge-sdk
+    source: packages/bi-edge
+    secrets:
+      required:
+        - COMPANIES_HOUSE_KEY
+        - BRAVE_API_KEY
+        - BRAND_NAME
+        - BRAND_ONE_LINER
+      optional:
+        - BREVO_API_KEY
+        - BREVO_SENDER_EMAIL
+        - BREVO_SENDER_NAME
+        - BREVO_REPLY_TO
+        - CALENDLY_URL
+        - SLACK_BOT_TOKEN
+    schedules:
+      - name: crawl
+        cron: "0 1 * * *"
+        description: "Nightly registry crawl via core handoff"
+      - name: research
+        cron: "*/30 * * * *"
+        description: "Lead classification and research enrichment"
+      - name: reply_poll
+        cron: "*/15 * * * *"
+        description: "Brevo inbound reply polling"
+      - name: housekeeping
+        cron: "0 3 * * *"
+        description: "Retention, GDPR cleanup, watermark maintenance"
+    budgets:
+      maxTokensPerDay: 400000
+
+  core:
+    kind: core-runtime
+    name: bi-core
+    runtime: "mastra:1.x"
+    image: "registry.fly.io/agentdeploy/mastra-core:1.x"
+    source: packages/bi-core
+    taskTypes:
+      - crawl
+      - verify
+      - enrich
+    volume:
+      mountPath: /data
+      minSizeGb: 5
+    budgets:
+      maxVmHoursPerDay: 2
+      maxTokensPerDay: 400000
+    secrets:
+      required:
+        - COMPANIES_HOUSE_KEY
+        - BRAVE_API_KEY
+    egress:
+      allowlist:
+        - "*.companieshouse.gov.uk"
+        - "api.search.brave.com"
+        - "recherche-entreprises.api.gouv.fr"
+        - "*.googleapis.com"
+
+  classifier:
+    kind: cloudflare-worker
+    name: jev
+    runtime: edge-sdk
+    source: packages/edge-jev
+    standalone: true
+
+wiring:
+  handoffs:
+    - from: edge
+      to: core
+      taskType:
+        - crawl
+        - verify
+        - enrich
+      maxRuntimeSec: 3600
+      budget:
+        vmMinutes: 60
+        tokens: 200000
+  callbacks:
+    - from: core
+      to: edge
+      on: task.completed
+      via: http_callback
+      path: /inbound/sync
+
+isolation:
+  core:
+    policy: 1-vm-1-tenant
+    network: deny-all-default
+    egressAllowlist: true
+
+pricing:
+  template:
+    price: 0
+    description: "Free reference template — revenue from hosting + tokens + VM-hours"
+  hosting:
+    tiers:
+      - name: sandbox
+        monthlyPrice: 0
+        limits:
+          maxLeads: 500
+          maxVmHoursPerDay: 1
+      - name: starter
+        monthlyPrice: 49
+        limits:
+          maxLeads: 5000
+          maxVmHoursPerDay: 2
+      - name: business
+        monthlyPrice: 149
+        limits:
+          maxLeads: 50000
+          maxVmHoursPerDay: 4

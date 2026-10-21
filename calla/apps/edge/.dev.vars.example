@@ -1,0 +1,65 @@
+# Local dev only (wrangler dev). Never deployed.
+# Serves empty data-plane payloads for /d/:id/cmd/* so the UI's data hooks
+# don't 404-spam when no buyer BI agent is proxied locally.
+CALLA_DEV_STUBS=true
+
+# ─── Self-hosted (standalone) auth ────────────────────────────────
+# Shared HMAC secret for the brain-issued user JWTs. Set to the SAME value as
+# the brain's CALLA_JWT_SECRET (generate: `openssl rand -hex 32`) to require a
+# valid Calla JWT on user routes (/steps, /approvals, /state, /fleet, /audit*,
+# /events, /events/recent). Leave unset for open local dev.
+# CALLA_JWT_SECRET=
+
+# Service token for machine relays posting to /events/ingest (x-calla-token).
+# EVENTS_AUTH_TOKEN=
+
+# ─── Voice agent (CallaVoiceAgent — dental receptionist) ────────────
+# OpenAI-compatible LLM gateway (default: Chutes + Mistral Nemo).
+# Without LLM_API_KEY the DO answers in echo mode (STT→TTS still works).
+# LLM_BASE_URL=https://llm.chutes.ai/v1
+# LLM_API_KEY=cpk_...
+# LLM_MODEL=unsloth/Mistral-Nemo-Instruct-2407-TEE
+# TTS overrides (default @cf/deepgram/aura-2-en / speaker "luna"):
+# VOICE_TTS_MODEL=@cf/deepgram/aura-2-en
+# VOICE_TTS_SPEAKER=luna
+#
+# Real STT/TTS in `wrangler dev` (Workers AI): in wrangler 4.147+ the AI
+# binding is REMOTE by default (local emulation no longer runs Flux/Aura),
+# so `wrangler dev` of this worker needs CF auth:
+#   `npx wrangler login` (one-time) or export CLOUDFLARE_API_TOKEN=...
+
+# ─── Telnyx telephony (B1; EU/UK/IE coverage — Plivo is unavailable there) ──
+# Mission Control (portal.telnyx.com) → API keys:
+ # TELNYX_API_KEY=KEY01...                 # outbound dials + speak/hangup
+ # TELNYX_PUBLIC_KEY=base64...             # Ed25519 public key — verifies
+                                           #   every webhook + stream WS; unset →
+                                           #   /telnyx/* refuses traffic (503/401)
+ # TELNYX_CONNECTION_ID=...                # set after provisioning (the
+                                           #   TeXML app id the number joins)
+ # TELNYX_DEFAULT_NUMBER=+3531...          # the practice line (ordered in
+                                           #   Mission Control → Numbers)
+ # TELNYX_STREAM_TOKEN=openssl-rand-hex-32 # shared secret on /telnyx/stream
+ # CALLA_EDGE_URL=https://<worker>.<subdomain>.workers.dev   # public URL
+                                           #   (provisioning + wss:// stream host
+                                           #   + escalation webhook base)
+ # Escalation (B2): on-call destination for the outbound dial when a caller
+ # is escalated (alert is spoken on answer via /telnyx/status). Unset →
+ # escalation still fires event + audit (UI takeover only).
+ # TELNYX_ESCALATION_NUMBER=+353851...
+ # (optional) spoken-voice override for the escalation alert:
+ # TELNYX_TTS_VOICE=Telnyx.Natural.abbie
+ # Provision the TeXML app + assign the number (idempotent, run on each deploy):
+ #   node scripts/provision-telnyx.mjs    # reads the vars above from env
+
+ # ─── Brain integration (B2) ───────────────────────────────────────────────
+ # Base URL of the Calla brain (persona/skills, conversations, booking).
+ # Unset → the voice DO runs the builtin persona with booking tools disabled.
+ # BRAIN_URL=http://127.0.0.1:3001
+ # Service token sent as `Authorization: Bearer` — must equal the brain's
+ # CALLA_TOKEN (leave unset for an open local brain).
+ # BRAIN_SERVICE_TOKEN=
+ # Booking rep (calendar owner) the voice line books into by default.
+ # Unset → first enabled rep from the brain.
+ # VOICE_BOOKING_REP_ID=
+ # Voice booking approval policy: always | risky (default) | never.
+ # VOICE_BOOKING_APPROVAL=risky

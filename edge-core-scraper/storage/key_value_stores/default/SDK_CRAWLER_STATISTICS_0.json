@@ -1,0 +1,48 @@
+{
+  "requestsFinished": 0,
+  "requestsFailed": 1,
+  "requestsRetries": 1,
+  "requestsFailedPerMinute": 0,
+  "requestsFinishedPerMinute": 0,
+  "requestMinDurationMillis": null,
+  "requestMaxDurationMillis": 0,
+  "requestTotalFailedDurationMillis": 30006,
+  "requestTotalFinishedDurationMillis": 0,
+  "crawlerStartedAt": "2026-10-01T13:35:25.723Z",
+  "crawlerFinishedAt": "2026-10-01T13:36:25.782Z",
+  "statsPersistedAt": "2026-10-01T13:36:25.782Z",
+  "crawlerRuntimeMillis": 60079,
+  "crawlerLastStartTimestamp": 1790861725703,
+  "requestRetryHistogram": [
+    null,
+    1
+  ],
+  "statsId": "0",
+  "requestAvgFailedDurationMillis": 30006,
+  "requestAvgFinishedDurationMillis": null,
+  "requestTotalDurationMillis": 30006,
+  "requestsTotal": 1,
+  "requestsWithStatusCode": {},
+  "errors": {
+    "/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74": {
+      "missing error code": {
+        "Error": {
+          "request timed out after 30 seconds.": {
+            "count": 1
+          }
+        }
+      }
+    }
+  },
+  "retryErrors": {
+    "/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74": {
+      "missing error code": {
+        "Error": {
+          "request timed out after 30 seconds.": {
+            "count": 1
+          }
+        }
+      }
+    }
+  }
+}

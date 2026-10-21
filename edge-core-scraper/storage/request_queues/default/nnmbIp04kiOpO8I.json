@@ -1,0 +1,9 @@
+{
+	"id": "nnmbIp04kiOpO8I",
+	"json": "{\"id\":\"nnmbIp04kiOpO8I\",\"url\":\"https://find-and-update.company-information.service.gov.uk/search?q=web%20development%20agency\",\"uniqueKey\":\"https://find-and-update.company-information.service.gov.uk/search?q=web+development+agency\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":1,\"errorMessages\":[\"Error: request timed out after 30 seconds.\\n    at fire (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74)\\n    at Timeout._onTimeout (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:115:40)\\n    at listOnTimeout (node:internal/timers:594:17)\\n    at process.processTimers (node:internal/timers:529:7)\",\"Error: request timed out after 30 seconds.\\n    at fire (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:109:74)\\n    at Timeout._onTimeout (/Users/mac/Documents/agent-deploy-master/packages/edge-core-scraper/node_modules/@apify/src/index.ts:115:40)\\n    at listOnTimeout (node:internal/timers:594:17)\\n    at process.processTimers (node:internal/timers:529:7)\"],\"headers\":{\"user-agent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36\"},\"userData\":{\"kind\":\"search\",\"__crawlee\":{\"state\":5}},\"handledAt\":\"2026-10-01T13:36:25.780Z\"}",
+	"method": "GET",
+	"orderNo": null,
+	"retryCount": 1,
+	"uniqueKey": "https://find-and-update.company-information.service.gov.uk/search?q=web+development+agency",
+	"url": "https://find-and-update.company-information.service.gov.uk/search?q=web%20development%20agency"
+}

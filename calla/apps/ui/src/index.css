@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+
+    --background: 220 30% 98%;
+    --foreground: 222 32% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 32% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 32% 11%;
+    --secondary: 220 24% 95%;
+    --secondary-foreground: 222 20% 23%;
+    --muted: 220 20% 93%;
+    --muted-foreground: 220 10% 38%;
+    --body-foreground: 220 13% 28%;
+    --faint-foreground: 220 9% 48%;
+
+    --primary: 216 76% 47%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 220 24% 94%;
+    --accent-foreground: 222 32% 11%;
+    --destructive: 355 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 155 62% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 36 88% 42%;
+    --warning-foreground: 30 54% 7%;
+    --info: 199 78% 42%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 220 17% 87%;
+    --border-strong: 220 14% 77%;
+    --input: 0 0% 100%;
+    --ring: 216 76% 47%;
+    --surface-app: 220 30% 98%;
+    --surface-canvas: 220 24% 96%;
+    --surface-sidebar: 220 27% 97%;
+    --surface-panel: 0 0% 100%;
+    --surface-hover: 220 23% 93%;
+    --surface-elevated: 0 0% 100%;
+    --surface-overlay: 0 0% 100%;
+    --surface-tag: 220 22% 94%;
+
+    --radius: 0.75rem;
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.625rem;
+    --radius-xl: 0.75rem;
+    --radius-2xl: 1rem;
+    --shadow-control: inset 0 1px 0 hsl(0 0% 100% / 0.9),
+      0 1px 2px hsl(220 35% 15% / 0.07);
+    --shadow-panel: inset 0 1px 0 hsl(0 0% 100% / 0.92),
+      0 1px 2px hsl(220 35% 15% / 0.055), 0 12px 32px hsl(220 35% 15% / 0.065);
+    --shadow-elevated: inset 0 1px 0 hsl(0 0% 100% / 0.94),
+      0 18px 48px hsl(220 35% 15% / 0.11);
+    --shadow-float: inset 0 1px 0 hsl(0 0% 100% / 0.96),
+      0 24px 64px hsl(220 35% 15% / 0.15);
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    --background: 220 18% 3%;
+    --foreground: 216 30% 98%;
+    --card: 222 24% 8%;
+    --card-foreground: 216 30% 98%;
+    --popover: 220 22% 14%;
+    --popover-foreground: 216 30% 98%;
+    --secondary: 223 25% 11%;
+    --secondary-foreground: 218 17% 86%;
+    --muted: 220 18% 13%;
+    --muted-foreground: 218 14% 68%;
+    --body-foreground: 218 18% 84%;
+    --faint-foreground: 218 11% 54%;
+
+    --primary: 213 88% 66%;
+    --primary-foreground: 216 24% 98%;
+    --accent: 220 22% 14%;
+    --accent-foreground: 216 30% 98%;
+    --destructive: 355 82% 68%;
+    --destructive-foreground: 220 18% 5%;
+    --success: 155 58% 58%;
+    --success-foreground: 158 46% 7%;
+    --warning: 36 75% 62%;
+    --warning-foreground: 30 54% 7%;
+    --info: 199 100% 75%;
+    --info-foreground: 220 18% 5%;
+
+    --border: 221 19% 19%;
+    --border-strong: 221 19% 27%;
+    --input: 220 23% 7%;
+    --ring: 213 88% 66%;
+    --surface-app: 220 18% 3%;
+    --surface-canvas: 220 25% 5%;
+    --surface-sidebar: 218 25% 6%;
+    --surface-panel: 222 24% 8%;
+    --surface-hover: 223 25% 12%;
+    --surface-elevated: 220 22% 15%;
+    --surface-overlay: 220 21% 17%;
+    --surface-tag: 220 18% 14%;
+    --shadow-control: inset 0 1px 0 hsl(0 0% 100% / 0.035),
+      0 1px 2px hsl(220 40% 2% / 0.38);
+    --shadow-panel: inset 0 1px 0 hsl(0 0% 100% / 0.035),
+      0 1px 2px hsl(220 40% 2% / 0.36), 0 12px 32px hsl(220 40% 2% / 0.18);
+    --shadow-elevated: inset 0 1px 0 hsl(0 0% 100% / 0.05),
+      0 18px 48px hsl(220 40% 2% / 0.38);
+    --shadow-float: inset 0 1px 0 hsl(0 0% 100% / 0.055),
+      0 24px 64px hsl(220 40% 2% / 0.52);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.28);
+    color: hsl(var(--foreground));
+  }
+
+  body {
+    @apply bg-background text-body font-sans antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-foreground;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border-strong)) transparent;
+  }
+}
+
+/* Chat markdown rendering */
+.chat-markdown {
+  @apply text-sm leading-relaxed;
+}
+.chat-markdown p {
+  @apply my-2;
+}
+.chat-markdown code {
+  @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.8em];
+}
+.chat-markdown pre {
+  @apply my-2 overflow-x-auto rounded-md bg-muted p-3;
+}
+.chat-markdown pre code {
+  @apply bg-transparent p-0;
+}
+.chat-markdown ul {
+  @apply my-2 list-disc pl-5;
+}
+.chat-markdown ol {
+  @apply my-2 list-decimal pl-5;
+}
+.chat-markdown a {
+  @apply text-primary underline underline-offset-2;
+}
+.chat-markdown blockquote {
+  @apply my-2 border-l-2 border-border pl-3 text-muted-foreground;
+}
+.chat-markdown table {
+  @apply my-2 w-full border-collapse text-xs;
+}
+.chat-markdown th,
+.chat-markdown td {
+  @apply border border-border px-2 py-1 text-left;
+}

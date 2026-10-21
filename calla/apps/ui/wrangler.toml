@@ -1,0 +1,10 @@
+name = "calla-console"
+compatibility_date = "2026-01-01"
+pages_build_output_dir = "dist"
+
+[vars]
+MARKETPLACE_URL = "https://agentdeploy.io"
+DEPLOYMENT_API_URL = "https://api.agentdeploy.io"
+# BRAIN_URL points at the Mastra brain on Fly.io; set per-deployment via
+# `wrangler pages secret put BRAIN_URL`
+# AGENT_BACKEND_URL / DEPLOYMENT_MAP set by the provisioning pipeline
