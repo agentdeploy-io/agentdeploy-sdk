@@ -79,9 +79,16 @@ your own inbox, or without any email at all:
   the lead keeps its own address and is never emailed. Gates (approval,
   dry-run, send-enabled, daily cap) still apply. A lead with no email can be
   test-sent.
-- **Simulate a reply** — `POST /cmd/simulate-reply {"sent_id":N,"text":"…","from":"you@x.com"}`
-  fabricates an inbound Brevo-style event and runs it through the **same**
-  classify → draft pipeline as a real webhook. Drives the loop with no mailbox.
+- **Simulate a reply** — `POST /cmd/simulate-reply {"sent_id":N,"text":"…","from":"you@x.com"}`.
+  With test mode on it first **sends a real Brevo email to the test inbox**
+  (threaded under the pitch subject, original pitch quoted underneath), then
+  fabricates the matching inbound event and runs it through the **same**
+  classify → draft pipeline as a real webhook. Approving the resulting draft
+  (`/send-reply`) sends another real email to the test inbox — so a full
+  back-and-forth conversation builds up in your mailbox. Note: Brevo only
+  sends as the agent address, so simulated "lead" replies also appear from
+  the agent (internal use). Turn dry-run off first if you want the initial
+  pitch to be a real email too.
 - **Thinking / traces** — every LLM call (classify, write, reply-classify,
   reply-draft) is recorded (prompt input + raw output, latency) to the
   `llm_traces` table; `GET /cmd/traces?limit=30`. The UI "Thinking" panel

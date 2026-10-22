@@ -39,7 +39,7 @@ import {
   isTestMode,
   getTestRecipient,
 } from "./db/index.js";
-import { getFirstEmail } from "./agents/outreach.js";
+import { getFirstEmail, sendViaBrevo } from "./agents/outreach.js";
 import { cronWasDue, isValidCron } from "./services/cron-match.js";
 import { resolveCampaign, updateCampaign, campaignEnvOverrides } from "./services/campaign.js";
 
@@ -94,6 +94,14 @@ function json(data: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // ── Agent handler ────────────────────────────────────────────────────────────
@@ -451,13 +459,36 @@ export class BiEdgeAgent {
     const testRecipient = getTestRecipient(db as any);
     const from = (body.from ?? "").trim() || testRecipient || getFirstEmail(lead) || `test-${Date.now()}@example.invalid`;
     const messageId = `sim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const subject = `Re: ${lead.pitch_subject ?? ""}`.trim();
+
+    // Test mode: deliver the simulated reply as a REAL email to the test inbox,
+    // quoted under the original pitch, so the whole back-and-forth thread is
+    // visible in a real mailbox (internal use — Brevo only sends as the agent).
+    let email: { to: string; subject: string; messageId: string } | null = null;
+    let emailError: string | undefined;
+    if (isTestMode(db as any) && testRecipient) {
+      try {
+        const quoted = (lead.pitch_body ?? "")
+          .split("\n")
+          .map((line) => `&gt; ${escapeHtml(line)}`)
+          .join("<br>");
+        const html = `<div><p>${escapeHtml(text)}</p><hr style="border:none;border-top:1px solid #ddd">${
+          quoted ? `<p style="color:#6b7280;font-size:13px;margin-top:8px">${quoted}</p>` : ""
+        }</div>`;
+        const toName = testRecipient.split("@")[0] || "Test";
+        const sent = await sendViaBrevo(testRecipient, toName, subject, html, env);
+        email = { to: testRecipient, subject, messageId: sent.messageId };
+      } catch (e: any) {
+        emailError = e.message;
+      }
+    }
 
     const payload = {
       items: [
         {
           MessageId: messageId,
           From: { Address: from, Name: "" },
-          Subject: `Re: ${lead.pitch_subject ?? ""}`.trim(),
+          Subject: subject,
           RawTextBody: text,
           SentAtDate: new Date().toISOString(),
           SpamScore: 0,
@@ -471,7 +502,18 @@ export class BiEdgeAgent {
       body: JSON.stringify(payload),
     });
     const res = await handleInboundWebhook(synthetic, env, db as any);
-    return withCors(res);
+    const result = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const emailNote = email
+      ? `Real email delivered to ${email.to} (threaded under the pitch) — check your test inbox`
+      : emailError
+        ? `Simulated, but the real email failed: ${emailError}`
+        : "Test mode off — simulation only, no real email sent";
+    return withCors(json({
+      ...result,
+      email,
+      ...(emailError ? { emailError } : {}),
+      emailNote,
+    }));
   }
 
   private async handleSecrets(request: Request, env: Record<string, unknown>): Promise<Response> {

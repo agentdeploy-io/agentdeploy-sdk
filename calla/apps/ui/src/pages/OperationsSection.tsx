@@ -552,6 +552,7 @@ function SimulateReplyDialog({
   deploymentId,
   entry,
   defaultFrom,
+  testModeOn,
   open,
   onClose,
   onDone,
@@ -559,6 +560,7 @@ function SimulateReplyDialog({
   deploymentId: string;
   entry: SentEntry;
   defaultFrom: string;
+  testModeOn: boolean;
   open: boolean;
   onClose: () => void;
   onDone: () => void;
@@ -583,9 +585,23 @@ function SimulateReplyDialog({
         body: JSON.stringify({ sent_id: entry.id, from: from.trim() || undefined, text }),
         signal: AbortSignal.timeout(60_000),
       });
-      const j = (await res.json()) as { error?: string; matched?: number; drafted?: number };
+      const j = (await res.json()) as {
+        error?: string;
+        matched?: number;
+        drafted?: number;
+        email?: { to: string; subject: string; messageId: string } | null;
+        emailError?: string;
+        emailNote?: string;
+      };
       if (!res.ok) throw new Error(j.error ?? `${res.status}`);
-      if ((j.matched ?? 0) === 0) {
+      if (j.emailError) {
+        toast.error("Reply simulated, but real email failed", j.emailError);
+      } else if (j.email) {
+        toast.success(
+          "Reply simulated + real email sent",
+          `Matched ${j.matched} lead${j.matched === 1 ? "" : "s"}${j.drafted ? `, ${j.drafted} draft${j.drafted === 1 ? "" : "s"} in your Inbox` : ""}. Real email delivered to ${j.email.to} — open it to see the thread.`,
+        );
+      } else if ((j.matched ?? 0) === 0) {
         toast.error("Simulation matched no lead", "The reply didn't match a sent lead — check the sent log row.");
       } else {
         toast.success(
@@ -607,12 +623,16 @@ function SimulateReplyDialog({
       open={open}
       onClose={onClose}
       title="Simulate a reply"
-      description={`Pretend the recipient of "${entry.lead_key}" replied — runs the real classify → draft pipeline.`}
+      description={
+        testModeOn
+          ? `Pretend the recipient of "${entry.lead_key}" replied. Runs the real classify → draft pipeline AND delivers a real email to your test inbox so you can watch the back-and-forth thread.`
+          : `Pretend the recipient of "${entry.lead_key}" replied — runs the real classify → draft pipeline. (Test mode is off, so no real email is sent.)`
+      }
       footer={
         <>
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={send} disabled={busy || !text.trim()}>
-            {busy ? "Classifying…" : "Send simulated reply"}
+            {busy ? "Classifying…" : testModeOn ? "Send reply + real email" : "Send simulated reply"}
           </Button>
         </>
       }
@@ -665,6 +685,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
   const [pendingDrafts, setPendingDrafts] = React.useState<number | null>(null);
   const [funnel, setFunnel] = React.useState<Array<{ stage: string; count: number }> | null>(null);
   const [testRecipient, setTestRecipient] = React.useState("");
+  const [testModeOn, setTestModeOn] = React.useState(false);
   const [simulateEntry, setSimulateEntry] = React.useState<SentEntry | null>(null);
   const { runs, loading: runsLoading, refetch: refetchRuns } = useRuns(deploymentId) as {
     runs: CrawlRunEntry[];
@@ -718,6 +739,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       if (campaignRes.ok) {
         const j = (await campaignRes.json()) as Campaign;
         setTestRecipient(j.testRecipient ?? "");
+        setTestModeOn(j.testMode === true);
       }
     } catch (err) {
       setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
@@ -1085,6 +1107,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
           deploymentId={deploymentId}
           entry={simulateEntry}
           defaultFrom={testRecipient}
+          testModeOn={testModeOn && !!testRecipient}
           open
           onClose={() => setSimulateEntry(null)}
           onDone={loadAll}

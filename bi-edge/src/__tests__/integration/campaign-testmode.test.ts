@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("@agentdeploy-io/edge-sdk", () => ({
   createAgent: vi.fn(() => ({ id: "test-agent" })),
+  createHandler: vi.fn(() => ({ fetch: async () => new Response("{}", { status: 200 }) })),
   gatewayFetchWithBackoff: vi.fn(),
   gatewayHeaders: vi.fn(() => ({})),
   parseLlmJson: vi.fn(),
@@ -28,6 +29,7 @@ import {
   updateCampaign,
 } from "../../services/campaign.js";
 import { gatewayFetchWithBackoff, parseLlmJson } from "@agentdeploy-io/edge-sdk";
+import { BiEdgeAgent } from "../../index.js";
 import type { Lead } from "../../db/types.js";
 
 function createTestDb(): DatabaseType.Database {
@@ -230,5 +232,134 @@ describe("simulate-reply (synthetic inbound webhook)", () => {
     expect(drafts[0].lead_key).toBe(lead.key);
     expect(drafts[0].draft).toContain("Tuesday");
     expect(getLead(db, lead.key)?.status).toBe("replied");
+  });
+});
+
+function classifyMock(leadKey: string, replyFrom: string, replyBody: string) {
+  return {
+    replies: [{
+      leadKey,
+      email: replyFrom,
+      intent: "interested",
+      permanent: false,
+      summary: "wants a call",
+      replyFrom,
+      replySubject: "Re: quick question",
+      replyBody,
+    }],
+  };
+}
+
+function mockLlmAndBrevo(leadKey: string, replyFrom: string, replyBody: string, brevoBodies: any[]) {
+  vi.mocked(parseLlmJson).mockImplementation((x: any) => JSON.parse(x.choices[0].message.content));
+  // LLM calls go through gatewayFetchWithBackoff; the Brevo send uses global fetch.
+  vi.stubGlobal("fetch", async (url: any, init?: any) => {
+    const u = String(url);
+    if (u.includes("api.brevo.com")) {
+      brevoBodies.push(JSON.parse(init.body));
+      return { ok: true, json: async () => ({ messageId: "brevo-sim-1" }) } as any;
+    }
+    throw new Error(`Unexpected fetch in test: ${u}`);
+  });
+  mockedFetch.mockImplementation(async (url: any, init?: any) => {
+    const body = JSON.parse(init.body);
+    const isClassify = body.messages[0].content.includes("You classify inbound email");
+    if (isClassify) {
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify(classifyMock(leadKey, replyFrom, replyBody)) } }],
+        }),
+      } as any;
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: JSON.stringify({
+          replies: [{ key: leadKey, subject: "Re: quick question", body: "Absolutely — how about Tuesday?" }],
+        }) } }],
+      }),
+    } as any;
+  });
+}
+
+describe("worker POST /cmd/simulate-reply (real email in test mode)", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function makeWorker(db: DatabaseType.Database): any {
+    const worker = new BiEdgeAgent({ storage: {} } as any, ENV as any);
+    (worker as any).db = db;
+    return worker;
+  }
+
+  it("delivers a real Brevo email to the test inbox (threaded) and still drafts a response", async () => {
+    const db = createTestDb();
+    const lead = makeLead(db, { stage: "sent", status: "sent" });
+    logSentEmail(db, {
+      lead_key: lead.key,
+      email: getFirstEmail(lead),
+      subject: lead.pitch_subject ?? "",
+      message_id: "msg-1",
+      status: "sent",
+      at: new Date().toISOString(),
+    });
+    setSetting(db, "testMode", "true");
+    setSetting(db, "testRecipient", "founder@gradient3.io");
+
+    const brevoBodies: any[] = [];
+    mockLlmAndBrevo(lead.key, "founder@gradient3.io", "Yes — could we hop on a call?", brevoBodies);
+
+    const req = new Request("http://worker/cmd/simulate-reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sent_id: 1, from: "founder@gradient3.io", text: "Yes — could we hop on a call?" }),
+    });
+    const res = await makeWorker(db).fetch(req);
+    expect(res.status).toBe(200);
+    const out = await res.json();
+
+    expect(out.matched).toBe(1);
+    expect(out.drafted).toBe(1);
+    expect(out.email).toEqual({
+      to: "founder@gradient3.io",
+      subject: `Re: ${lead.pitch_subject}`,
+      messageId: "brevo-sim-1",
+    });
+    expect(brevoBodies).toHaveLength(1);
+    expect(brevoBodies[0].to[0].email).toBe("founder@gradient3.io");
+    expect(brevoBodies[0].subject).toBe(`Re: ${lead.pitch_subject}`);
+    expect(brevoBodies[0].htmlContent).toContain("could we hop on a call");
+    expect(brevoBodies[0].htmlContent).toContain("&gt;");
+  });
+
+  it("skips the real email when test mode is off", async () => {
+    const db = createTestDb();
+    const lead = makeLead(db, { key: "uk/acme-tm2", stage: "sent", status: "sent" });
+    logSentEmail(db, {
+      lead_key: lead.key,
+      email: getFirstEmail(lead),
+      subject: lead.pitch_subject ?? "",
+      message_id: "msg-2",
+      status: "sent",
+      at: new Date().toISOString(),
+    });
+
+    const brevoBodies: any[] = [];
+    mockLlmAndBrevo(lead.key, "founder@gradient3.io", "Yes — could we hop on a call?", brevoBodies);
+
+    const req = new Request("http://worker/cmd/simulate-reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sent_id: 1, from: "founder@gradient3.io", text: "Yes — could we hop on a call?" }),
+    });
+    const res = await makeWorker(db).fetch(req);
+    expect(res.status).toBe(200);
+    const out = await res.json();
+
+    expect(out.email).toBeNull();
+    expect(brevoBodies).toHaveLength(0);
+    expect(out.emailNote).toContain("Test mode off");
   });
 });
