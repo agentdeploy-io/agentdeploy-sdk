@@ -69,6 +69,38 @@ Note: DO `getAlarm()`/`setAlarm()` are **async** on current compatibility
 dates — they must be awaited before the response returns (see
 `ensureAlarmArmed`, which also re-arms a stale alarm on the next request).
 
+### Test mode & end-to-end simulation (no mailbox needed)
+
+Three settings let you exercise the whole send→reply→approve loop against
+your own inbox, or without any email at all:
+
+- **Test mode** — `POST /cmd/campaign {"testMode":"true","testRecipient":"you@x.com"}`.
+  When on, every pitch and reply send is **redirected to your test inbox**;
+  the lead keeps its own address and is never emailed. Gates (approval,
+  dry-run, send-enabled, daily cap) still apply. A lead with no email can be
+  test-sent.
+- **Simulate a reply** — `POST /cmd/simulate-reply {"sent_id":N,"text":"…","from":"you@x.com"}`
+  fabricates an inbound Brevo-style event and runs it through the **same**
+  classify → draft pipeline as a real webhook. Drives the loop with no mailbox.
+- **Thinking / traces** — every LLM call (classify, write, reply-classify,
+  reply-draft) is recorded (prompt input + raw output, latency) to the
+  `llm_traces` table; `GET /cmd/traces?limit=30`. The UI "Thinking" panel
+  shows them so you can debug/tune the lead-gen flows.
+
+### Campaign config (runtime-editable brand + targeting)
+
+`GET/POST /cmd/campaign` — brand name / one-liner / site / logo / booking
+link and free-form **ICP notes** (injected into the classifier prompt; the
+structured NACE/size gates still apply). Stored in `settings` as
+`campaign:*`, overriding the `BRAND_*` env until cleared. `countries` /
+`crawlLimit` are plain settings read by the crawl cron. Resolved values are
+merged over the Worker env on every request, so edits apply immediately.
+
+The UI **Operations** page renders all of the above: Campaign & Test panel,
+Thinking panel, per-row "Simulate reply", plus start/stop, per-cron editor,
+run-now, send settings, sent log and the live funnel. A **Fleet** card points
+here.
+
 ---
 
 ## 2. Where every setting lives

@@ -23,8 +23,11 @@ import * as React from "react";
 import {
   AlertTriangle,
   Bot,
+  BrainCircuit,
   CalendarClock,
   CheckCircle2,
+  FlaskConical,
+  MessageSquareText,
   Pause,
   Play,
   RefreshCw,
@@ -33,7 +36,7 @@ import {
   Timer,
   Zap,
 } from "lucide-react";
-import { Badge, Button, Card, Skeleton } from "@/components/ui";
+import { Badge, Button, Card, Dialog, Skeleton, Textarea } from "@/components/ui";
 import { EmptyState } from "@/components/shared";
 import { authFetch, toast, useDeploymentSelector, useRuns } from "@/hooks";
 
@@ -70,6 +73,34 @@ interface SentEntry {
   subject: string;
   message_id: string | null;
   status: string;
+  at: string;
+}
+
+// Engine GET/POST /cmd/campaign contract
+interface Campaign {
+  campaign: {
+    brandName: string;
+    brandOneLiner: string;
+    brandSiteUrl: string;
+    brandLogoUrl: string;
+    calendlyUrl: string;
+    icpNotes: string;
+  };
+  testMode: boolean;
+  testRecipient: string;
+  countries: string;
+  crawlLimit: number;
+}
+
+// Engine GET /cmd/traces contract
+interface LlmTrace {
+  id: number;
+  stage: string;
+  lead_key: string | null;
+  model: string | null;
+  prompt_excerpt: string | null;
+  raw_response: string | null;
+  latency_ms: number | null;
   at: string;
 }
 
@@ -238,6 +269,382 @@ function ScheduleRow({
   );
 }
 
+// ─── Campaign & Test panel ───────────────────────────────────────
+
+const fieldCls =
+  "h-8 w-full rounded-md border border-border-strong bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring";
+
+function CampaignPanel({
+  deploymentId,
+  onSaved,
+}: {
+  deploymentId: string;
+  onSaved: () => void;
+}) {
+  const [data, setData] = React.useState<Campaign | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
+  const [form, setForm] = React.useState<Record<string, string>>({});
+
+  const load = React.useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const j = (await res.json()) as Campaign;
+      setData(j);
+      setForm({
+        brandName: j.campaign.brandName ?? "",
+        brandOneLiner: j.campaign.brandOneLiner ?? "",
+        brandSiteUrl: j.campaign.brandSiteUrl ?? "",
+        brandLogoUrl: j.campaign.brandLogoUrl ?? "",
+        calendlyUrl: j.campaign.calendlyUrl ?? "",
+        icpNotes: j.campaign.icpNotes ?? "",
+        testRecipient: j.testRecipient ?? "",
+        countries: j.countries ?? "",
+        crawlLimit: String(j.crawlLimit ?? 50),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load campaign");
+    }
+  }, [deploymentId]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+        signal: AbortSignal.timeout(10000),
+      });
+      const j = (await res.json()) as Campaign & { error?: string };
+      if (!res.ok) throw new Error(j.error ?? `${res.status}`);
+      setData(j);
+      toast.success("Campaign saved", "Applies to every new classification, pitch and reply immediately.");
+      onSaved();
+    } catch (err) {
+      toast.error("Campaign save failed", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setTestMode = async (on: boolean) => {
+    setSaving(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ testMode: String(on) }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const j = (await res.json()) as Campaign;
+      if (!res.ok) throw new Error(`${res.status}`);
+      setData(j);
+      toast.success(on ? "Test mode ON" : "Test mode OFF", on
+        ? `Every send now goes to ${j.testRecipient || "your test inbox"} — real leads are never touched.`
+        : "Sends go to the lead's own address again.");
+      onSaved();
+    } catch (err) {
+      toast.error("Test mode toggle failed", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (error) return <ErrorNote message={error} onRetry={load} />;
+  if (!data) return <Skeleton className="h-24 w-full" />;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Brand name
+          <input className={fieldCls} value={form.brandName ?? ""} onChange={(e) => set("brandName", e.target.value)} placeholder="Agent Miles" />
+        </label>
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          One-liner
+          <input className={fieldCls} value={form.brandOneLiner ?? ""} onChange={(e) => set("brandOneLiner", e.target.value)} placeholder="We build AI employees for small businesses." />
+        </label>
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Brand site
+          <input className={fieldCls} value={form.brandSiteUrl ?? ""} onChange={(e) => set("brandSiteUrl", e.target.value)} placeholder="https://gradient3.io" />
+        </label>
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Logo URL (https)
+          <input className={fieldCls} value={form.brandLogoUrl ?? ""} onChange={(e) => set("brandLogoUrl", e.target.value)} placeholder="https://gradient3.io/favicon.svg" />
+        </label>
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Booking link
+          <input className={fieldCls} value={form.calendlyUrl ?? ""} onChange={(e) => set("calendlyUrl", e.target.value)} placeholder="https://calendly.com/…" />
+        </label>
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Countries (comma-separated crawl targets)
+          <input className={fieldCls} value={form.countries ?? ""} onChange={(e) => set("countries", e.target.value)} placeholder="uk,ie,fr" />
+        </label>
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Crawl limit (leads per run)
+          <input className={fieldCls} value={form.crawlLimit ?? ""} onChange={(e) => set("crawlLimit", e.target.value)} inputMode="numeric" placeholder="50" />
+        </label>
+      </div>
+      <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+        ICP notes (steer the classifier — the structured NACE/size gates still apply)
+        <Textarea
+          className="min-h-16 text-xs"
+          value={form.icpNotes ?? ""}
+          onChange={(e) => set("icpNotes", e.target.value)}
+          placeholder="e.g. prioritise practices with a front desk; skip companies already using chatbots"
+        />
+      </label>
+
+      <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-canvas px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <FlaskConical className="size-4 text-muted-foreground" />
+          <span className="text-[0.8125rem] font-semibold text-foreground">Test mode</span>
+          <Button
+            size="sm"
+            variant={data.testMode ? "success" : "outline"}
+            onClick={() => setTestMode(!data.testMode)}
+            disabled={saving}
+            aria-pressed={data.testMode}
+          >
+            {data.testMode ? "Test mode ON" : "Test mode OFF"}
+          </Button>
+          <label className="flex items-center gap-1.5 text-[0.8125rem] text-muted-foreground">
+            Test inbox
+            <input
+              className="h-8 w-56 rounded-md border border-border-strong bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+              value={form.testRecipient ?? ""}
+              onChange={(e) => set("testRecipient", e.target.value)}
+              placeholder="you@yourdomain.com"
+            />
+          </label>
+        </div>
+        <p className="text-[0.6875rem] leading-snug text-muted-foreground">
+          When on, every pitch and reply send is redirected to your test inbox — the
+          lead keeps its own address on record and is never emailed. Dry-run /
+          send-enabled still apply, so nothing leaves until you allow it.
+        </p>
+      </div>
+
+      <div className="flex justify-end">
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save campaign"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Thinking (LLM traces) panel ─────────────────────────────────
+
+function ThinkingPanel({ deploymentId }: { deploymentId: string }) {
+  const [traces, setTraces] = React.useState<LlmTrace[] | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [openId, setOpenId] = React.useState<number | null>(null);
+
+  const load = React.useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/traces?limit=30`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const j = (await res.json()) as { traces: LlmTrace[] };
+      setTraces(j.traces ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load traces");
+    }
+  }, [deploymentId]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  if (error) return <ErrorNote message={error} onRetry={load} />;
+  if (traces === null) return <Skeleton className="h-24 w-full" />;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[0.6875rem] text-muted-foreground">
+          Every LLM call the engine makes — prompt input + raw model output. Expand a row to debug.
+        </p>
+        <Button variant="ghost" size="sm" onClick={load}>
+          <RefreshCw /> Refresh
+        </Button>
+      </div>
+      {traces.length === 0 ? (
+        <p className="text-[0.8125rem] text-muted-foreground">
+          No LLM calls yet — they appear once the pipeline classifies, writes or replies.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {traces.map((t) => {
+            const open = openId === t.id;
+            return (
+              <div key={t.id} className="rounded-md border border-border bg-surface-canvas">
+                <button
+                  type="button"
+                  onClick={() => setOpenId(open ? null : t.id)}
+                  className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left"
+                >
+                  <Badge variant={t.stage === "write" ? "info" : t.stage === "classify" ? "success" : "muted"}>
+                    {t.stage}
+                  </Badge>
+                  <span className="min-w-0 flex-1 truncate text-[0.8125rem] text-foreground">
+                    {t.lead_key ?? "—"}
+                  </span>
+                  <span className="text-[0.6875rem] text-muted-foreground">{t.model ?? ""}</span>
+                  <span className="text-[0.6875rem] text-muted-foreground">
+                    {t.latency_ms != null ? `${t.latency_ms}ms` : ""}
+                  </span>
+                  <span className="text-[0.6875rem] text-muted-foreground">{relativeTime(t.at)}</span>
+                </button>
+                {open && (
+                  <div className="flex flex-col gap-2 border-t border-border px-3 py-2">
+                    {t.prompt_excerpt && (
+                      <div>
+                        <div className="mb-1 text-[0.625rem] uppercase tracking-wide text-muted-foreground">Prompt input</div>
+                        <pre className="scrollbar-thin max-h-48 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[0.6875rem] leading-relaxed text-foreground">
+                          {t.prompt_excerpt}
+                        </pre>
+                      </div>
+                    )}
+                    {t.raw_response && (
+                      <div>
+                        <div className="mb-1 text-[0.625rem] uppercase tracking-wide text-muted-foreground">Model output</div>
+                        <pre className="scrollbar-thin max-h-48 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[0.6875rem] leading-relaxed text-foreground">
+                          {t.raw_response}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Simulate-reply dialog ───────────────────────────────────────
+
+const REPLY_PRESETS: Array<{ label: string; text: string }> = [
+  { label: "Interested — book a call", text: "Hi, this is timely — we could definitely use help with this. Could we hop on a call this week?" },
+  { label: "Question", text: "Thanks for reaching out. Before we talk, how does this work for a business our size?" },
+  { label: "Not interested", text: "Thanks but we're not looking for this right now." },
+  { label: "Opt out", text: "Please remove me from your list, I'd prefer not to hear from you again." },
+];
+
+function SimulateReplyDialog({
+  deploymentId,
+  entry,
+  defaultFrom,
+  open,
+  onClose,
+  onDone,
+}: {
+  deploymentId: string;
+  entry: SentEntry;
+  defaultFrom: string;
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [text, setText] = React.useState(REPLY_PRESETS[0].text);
+  const [from, setFrom] = React.useState(defaultFrom);
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      setText(REPLY_PRESETS[0].text);
+      setFrom(defaultFrom);
+    }
+  }, [open, defaultFrom]);
+
+  const send = async () => {
+    setBusy(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/simulate-reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sent_id: entry.id, from: from.trim() || undefined, text }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const j = (await res.json()) as { error?: string; matched?: number; drafted?: number };
+      if (!res.ok) throw new Error(j.error ?? `${res.status}`);
+      if ((j.matched ?? 0) === 0) {
+        toast.error("Simulation matched no lead", "The reply didn't match a sent lead — check the sent log row.");
+      } else {
+        toast.success(
+          "Reply simulated",
+          `Matched ${j.matched} lead${j.matched === 1 ? "" : "s"}${j.drafted ? `, ${j.drafted} draft${j.drafted === 1 ? "" : "s"} in your Inbox` : ""}.`,
+        );
+      }
+      onDone();
+      onClose();
+    } catch (err) {
+      toast.error("Simulation failed", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Simulate a reply"
+      description={`Pretend the recipient of "${entry.lead_key}" replied — runs the real classify → draft pipeline.`}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={send} disabled={busy || !text.trim()}>
+            {busy ? "Classifying…" : "Send simulated reply"}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3 p-5 pt-2">
+        <div className="flex flex-wrap gap-1.5">
+          {REPLY_PRESETS.map((p) => (
+            <Button key={p.label} variant="outline" size="sm" onClick={() => setText(p.text)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+        <Textarea
+          className="min-h-24 text-xs"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          aria-label="reply text"
+        />
+        <label className="flex items-center gap-2 text-[0.8125rem] text-muted-foreground">
+          From
+          <input
+            className="h-8 w-56 rounded-md border border-border-strong bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            placeholder="test inbox address"
+          />
+        </label>
+      </div>
+    </Dialog>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────
 
 export function OperationsSection({ onNavigate }: { onNavigate: (path: string) => void }) {
@@ -257,6 +664,8 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
   const [sent, setSent] = React.useState<SentEntry[] | null>(null);
   const [pendingDrafts, setPendingDrafts] = React.useState<number | null>(null);
   const [funnel, setFunnel] = React.useState<Array<{ stage: string; count: number }> | null>(null);
+  const [testRecipient, setTestRecipient] = React.useState("");
+  const [simulateEntry, setSimulateEntry] = React.useState<SentEntry | null>(null);
   const { runs, loading: runsLoading, refetch: refetchRuns } = useRuns(deploymentId) as {
     runs: CrawlRunEntry[];
     loading: boolean;
@@ -268,14 +677,16 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
     setSchedulesLoading(true);
     setSchedulesError(null);
     try {
-      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes] = await Promise.all([
-        authFetch(`${proxyBase(deploymentId)}/cmd/schedules`, { signal: AbortSignal.timeout(10000) }),
-        authFetch(`${proxyBase(deploymentId)}/cmd/sent?limit=20`, { signal: AbortSignal.timeout(10000) }),
-        authFetch(`${proxyBase(deploymentId)}/cmd/replies?status=pending`, { signal: AbortSignal.timeout(10000) }),
-        authFetch(`${proxyBase(deploymentId)}/cmd/secrets`, { signal: AbortSignal.timeout(10000) }),
-        authFetch(`${proxyBase(deploymentId)}/cmd/settings`, { signal: AbortSignal.timeout(10000) }),
-        authFetch(`${proxyBase(deploymentId)}/cmd/pipeline`, { signal: AbortSignal.timeout(10000) }),
-      ]);
+      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes] =
+        await Promise.all([
+          authFetch(`${proxyBase(deploymentId)}/cmd/schedules`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/sent?limit=20`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/replies?status=pending`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/secrets`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/settings`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/pipeline`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, { signal: AbortSignal.timeout(10000) }),
+        ]);
       if (schedRes.ok) {
         const j = (await schedRes.json()) as { schedules: OpSchedule[]; paused: boolean };
         setSchedules(j.schedules ?? []);
@@ -303,6 +714,10 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       if (pipelineRes.ok) {
         const j = (await pipelineRes.json()) as { funnel?: Array<{ stage: string; count: number }> };
         setFunnel(j.funnel ?? []);
+      }
+      if (campaignRes.ok) {
+        const j = (await campaignRes.json()) as Campaign;
+        setTestRecipient(j.testRecipient ?? "");
       }
     } catch (err) {
       setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
@@ -587,6 +1002,15 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
         </div>
       </Panel>
 
+      {/* ── Campaign & Test ───────────────────────────────── */}
+      <Panel
+        title="Campaign & Test"
+        icon={<FlaskConical className="size-4" />}
+        subtitle="Your brand, targeting and the end-to-end test loop — what the classifier, writer and replies use."
+      >
+        <CampaignPanel deploymentId={deploymentId} onSaved={loadAll} />
+      </Panel>
+
       {/* ── Activity ───────────────────────────────────────── */}
       <Panel
         title="Recent activity"
@@ -615,7 +1039,8 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
                   <th className="pb-2 pr-3 font-medium">Lead</th>
                   <th className="pb-2 pr-3 font-medium">To</th>
                   <th className="pb-2 pr-3 font-medium">Subject</th>
-                  <th className="pb-2 font-medium">Status</th>
+                  <th className="pb-2 pr-3 font-medium">Status</th>
+                  <th className="pb-2 font-medium" />
                 </tr>
               </thead>
               <tbody>
@@ -625,8 +1050,18 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
                     <td className="max-w-40 truncate py-1.5 pr-3 text-foreground">{e.lead_key}</td>
                     <td className="max-w-44 truncate py-1.5 pr-3 text-muted-foreground">{e.email}</td>
                     <td className="max-w-56 truncate py-1.5 pr-3 text-foreground">{e.subject}</td>
-                    <td className="py-1.5">
+                    <td className="py-1.5 pr-3">
                       <Badge variant={e.status === "sent" ? "success" : "info"}>{e.status}</Badge>
+                    </td>
+                    <td className="py-1.5 text-right">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setSimulateEntry(e)}
+                        title="Simulate a reply from this recipient through the real classify → draft pipeline"
+                      >
+                        <MessageSquareText /> Simulate reply
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -635,6 +1070,26 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
           </div>
         )}
       </Panel>
+
+      {/* ── Thinking (LLM traces) ──────────────────────────── */}
+      <Panel
+        title="Thinking"
+        icon={<BrainCircuit className="size-4" />}
+        subtitle="Raw LLM input/output from classify, write and reply steps — the debug view for tuning your lead-gen flows."
+      >
+        <ThinkingPanel deploymentId={deploymentId} />
+      </Panel>
+
+      {simulateEntry && (
+        <SimulateReplyDialog
+          deploymentId={deploymentId}
+          entry={simulateEntry}
+          defaultFrom={testRecipient}
+          open
+          onClose={() => setSimulateEntry(null)}
+          onDone={loadAll}
+        />
+      )}
     </div>
   );
 }

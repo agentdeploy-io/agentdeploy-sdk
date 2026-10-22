@@ -22,10 +22,12 @@ import {
   RefreshCw,
   ShieldAlert,
   Sparkles,
+  Timer,
   Users,
   Wrench,
   Zap,
 } from "lucide-react";
+import { isModuleEnabled } from "@calla/shared";
 import type { AgentEvent, AgentEventType, AgentStatus } from "@calla/shared";
 import {
   AgentCard,
@@ -34,9 +36,10 @@ import {
   lastEventForAgent,
 } from "@/components/AgentCard";
 import { useConsoleApprovals, useConsoleEvents } from "@/components/layout/console-context";
-import { Button, Card, StatusDot } from "@/components/ui";
+import { Badge, Button, Card, StatusDot } from "@/components/ui";
 import { EmptyState, LoadingState } from "@/components/shared";
-import { buildAgentRoute, useAgentHealth, useAgentRegistry } from "@/hooks";
+import { authFetch, buildAgentRoute, useAgentHealth, useAgentRegistry, useDeploymentSelector } from "@/hooks";
+import { useModuleConfig } from "@/lib/modules";
 import type { AgentRegistryEntry } from "@/constants/agents";
 import { cn, relativeTime } from "@/lib/utils";
 
@@ -246,10 +249,111 @@ const LiveEventsPanel: React.FC = () => {
   );
 };
 
+// ─── Lead-gen pipeline card ──────────────────────────────────────
+
+/**
+ * Shown only when the Data module is on. Surfaces the crawl/schedule state
+ * and points at the Operations screen — the discoverability fix for "where
+ * is the cron?".
+ */
+const PipelineCard: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavigate }) => {
+  const { deploymentId } = useDeploymentSelector();
+  const [info, setInfo] = React.useState<{
+    paused: boolean;
+    lastRunAt: string | null;
+    lastState: string | null;
+    nextCron: string | null;
+    funnel: Array<{ stage: string; count: number }>;
+  } | null>(null);
+
+  const load = React.useCallback(async () => {
+    if (!deploymentId) return;
+    try {
+      const [s, p] = await Promise.all([
+        authFetch(`/d/${deploymentId}/cmd/schedules`, { signal: AbortSignal.timeout(8000) }),
+        authFetch(`/d/${deploymentId}/cmd/pipeline`, { signal: AbortSignal.timeout(8000) }),
+      ]);
+      if (!s.ok) return;
+      const sj = (await s.json()) as {
+        schedules?: Array<{ name: string; cron: string; enabled: boolean; lastRun: string | null }>;
+        paused?: boolean;
+      };
+      const crawl = sj.schedules?.find((x) => x.name === "crawl");
+      let lastRunAt: string | null = null;
+      let lastState: string | null = null;
+      if (p.ok) {
+        const pj = (await p.json()) as {
+          funnel?: Array<{ stage: string; count: number }>;
+          lastCrawl?: { started_at?: string; startedAt?: string; state?: string } | null;
+        };
+        setInfo((prev) => ({
+          paused: !!sj.paused,
+          lastRunAt: pj.lastCrawl?.started_at ?? pj.lastCrawl?.startedAt ?? null,
+          lastState: pj.lastCrawl?.state ?? null,
+          nextCron: crawl?.enabled ? crawl.cron : null,
+          funnel: pj.funnel ?? prev?.funnel ?? [],
+        }));
+      } else {
+        setInfo({ paused: !!sj.paused, lastRunAt, lastState, nextCron: crawl?.enabled ? crawl.cron : null, funnel: [] });
+      }
+    } catch {
+      /* engine down — card stays hidden */
+    }
+  }, [deploymentId]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  if (!deploymentId || !info) return null;
+
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Timer className="size-4 text-muted-foreground" />
+          <span className="text-sm font-semibold text-foreground">Lead-gen pipeline</span>
+          <Badge variant={info.paused ? "warning" : "success"}>
+            {info.paused ? "Paused" : "Running"}
+          </Badge>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => onNavigate("/operations")}>
+          Open Operations →
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.75rem] text-muted-foreground">
+        <span>
+          Crawl schedule{" "}
+          <b className="font-mono text-foreground">{info.nextCron ?? "—"}</b>
+        </span>
+        <span>
+          Last run{" "}
+          <b className="text-foreground">
+            {info.lastRunAt ? `${relativeTime(info.lastRunAt)}${info.lastState ? ` · ${info.lastState}` : ""}` : "never"}
+          </b>
+        </span>
+        {info.funnel.length > 0 && (
+          <span className="flex flex-wrap gap-x-2">
+            {info.funnel.map((f) => (
+              <span key={f.stage}>
+                {f.stage} <b className="text-foreground tabular-nums">{f.count}</b>
+              </span>
+            ))}
+          </span>
+        )}
+      </div>
+      <p className="text-[0.6875rem] text-faint">
+        Start/stop, edit crons, run a crawl now, set your campaign and test the full send→reply loop in Operations.
+      </p>
+    </Card>
+  );
+};
+
 // ─── Screen ──────────────────────────────────────────────────────
 
 export const FleetDashboard: React.FC<FleetDashboardProps> = ({ onNavigate }) => {
   const { agents, loading, error, refetch } = useAgentRegistry();
+  const { modules } = useModuleConfig();
   const { approvals, counts } = useConsoleApprovals();
   const { events, status } = useConsoleEvents();
   const [statusByAgent, setStatusByAgent] = React.useState<Record<string, AgentStatus>>({});
@@ -332,6 +436,10 @@ export const FleetDashboard: React.FC<FleetDashboardProps> = ({ onNavigate }) =>
             </span>
           </div>
         </div>
+
+        {isModuleEnabled("data", modules) && (
+          <PipelineCard onNavigate={onNavigate} />
+        )}
 
         {awaiting > 0 && (
           <button

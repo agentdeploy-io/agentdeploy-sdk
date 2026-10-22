@@ -34,8 +34,14 @@ import {
   countSentToday,
   isPaused,
   getSetting,
+  listTraces,
+  getLead,
+  isTestMode,
+  getTestRecipient,
 } from "./db/index.js";
+import { getFirstEmail } from "./agents/outreach.js";
 import { cronWasDue, isValidCron } from "./services/cron-match.js";
+import { resolveCampaign, updateCampaign, campaignEnvOverrides } from "./services/campaign.js";
 
 // ── Env ──────────────────────────────────────────────────────────────────────
 
@@ -158,8 +164,11 @@ export class BiEdgeAgent {
     }
 
     const url = new URL(request.url);
-    const env = this.env as Record<string, unknown>;
+    const baseEnv = this.env as Record<string, unknown>;
     const db = this.getDb();
+    // Campaign fields edited in the UI (settings table) override env so the
+    // writer / outreach / reply-drafter pick them up without a redeploy.
+    const env = { ...baseEnv, ...campaignEnvOverrides(db as any, baseEnv) };
 
     await this.ensureAlarmArmed();
 
@@ -189,6 +198,9 @@ export class BiEdgeAgent {
           "GET|POST /cmd/settings",
           "GET|POST /cmd/secrets",
           "GET /cmd/wire",
+          "GET|POST /cmd/campaign",
+          "POST /cmd/simulate-reply",
+          "GET /cmd/traces",
           "GET /health",
           "GET /endpoints",
         ],
@@ -227,8 +239,21 @@ export class BiEdgeAgent {
         topology: "bi-edge",
         agents: ["supervisor", "qualifier", "researcher", "writer", "outreach"],
         crons: Object.keys(CRON_NAME_MAP),
-        routes: ["/inbound/sync", "/inbound-webhook", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules"],
+        routes: ["/inbound/sync", "/inbound-webhook", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/simulate-reply", "/cmd/traces"],
       }));
+    }
+
+    if (url.pathname === "/cmd/campaign") {
+      return withCors(await this.handleCampaign(request, db, env));
+    }
+
+    if (url.pathname === "/cmd/simulate-reply" && request.method === "POST") {
+      return withCors(await this.handleSimulateReply(request, db, env));
+    }
+
+    if (url.pathname === "/cmd/traces" && request.method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? 20);
+      return withCors(json({ traces: listTraces(db as any, limit) }));
     }
 
     if (url.pathname === "/cmd/schedules" || url.pathname.startsWith("/cmd/schedules/")) {
@@ -340,6 +365,113 @@ export class BiEdgeAgent {
       return json({ updated: keys.length, keys });
     }
     return json({ error: "Method not allowed" }, 405);
+  }
+
+  /**
+   * GET /cmd/campaign — the resolved campaign (UI edits win over env) plus
+   * the test-mode state. POST — persist a partial campaign update.
+   */
+  private async handleCampaign(request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+    if (request.method === "GET") {
+      const campaign = resolveCampaign(db as any, env);
+      return json({
+        campaign,
+        testMode: isTestMode(db as any),
+        testRecipient: getTestRecipient(db as any),
+        countries: String(getSetting(db as any, "countries") ?? "uk,ie,fr"),
+        crawlLimit: Number(getSetting(db as any, "crawlLimit") ?? 50),
+      });
+    }
+    if (request.method === "POST") {
+      let body: Record<string, string>;
+      try {
+        body = await request.json() as Record<string, string>;
+      } catch {
+        return json({ error: "Invalid JSON" }, 400);
+      }
+      const patch: Partial<Record<string, string>> = {};
+      const allowed = ["brandName", "brandOneLiner", "brandSiteUrl", "brandLogoUrl", "calendlyUrl", "icpNotes"];
+      for (const k of allowed) {
+        if (k in body) patch[k] = String(body[k] ?? "");
+      }
+      const updated = updateCampaign(db as any, patch as any, env);
+      const extraKeys: string[] = [];
+      if (body.testMode !== undefined) {
+        setSetting(db as any, "testMode", body.testMode === "true" || body.testMode === "1" ? "true" : "false");
+        extraKeys.push("testMode");
+      }
+      if (body.testRecipient !== undefined) {
+        setSetting(db as any, "testRecipient", String(body.testRecipient).trim());
+        extraKeys.push("testRecipient");
+      }
+      if (body.countries !== undefined) {
+        setSetting(db as any, "countries", String(body.countries).trim());
+        extraKeys.push("countries");
+      }
+      if (body.crawlLimit !== undefined) {
+        setSetting(db as any, "crawlLimit", String(Number(body.crawlLimit) || 50));
+        extraKeys.push("crawlLimit");
+      }
+      return json({
+        campaign: updated,
+        testMode: isTestMode(db as any),
+        testRecipient: getTestRecipient(db as any),
+        countries: String(getSetting(db as any, "countries") ?? "uk,ie,fr"),
+        crawlLimit: Number(getSetting(db as any, "crawlLimit") ?? 50),
+      });
+    }
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  /**
+   * POST /cmd/simulate-reply — fabricate an inbound reply from the operator's
+   * test inbox and run it through the SAME classify → draft pipeline as a real
+   * Brevo webhook. Lets the whole loop be exercised end-to-end with no mailbox.
+   * Body: { sent_id?, lead_key?, from?, text } — needs at least one of
+   * sent_id/lead_key and a non-empty text.
+   */
+  private async handleSimulateReply(request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+    let body: { sent_id?: number; lead_key?: string; from?: string; text?: string };
+    try {
+      body = await request.json() as any;
+    } catch {
+      return json({ error: "Invalid JSON" }, 400);
+    }
+    const text = (body.text ?? "").trim();
+    if (!text) return json({ error: "text is required" }, 400);
+
+    let leadKey = (body.lead_key ?? "").trim();
+    if (!leadKey && body.sent_id != null) {
+      const row = (db as any).prepare("SELECT lead_key FROM sent_log WHERE id = ?").get(Number(body.sent_id)) as { lead_key: string } | undefined;
+      leadKey = row?.lead_key ?? "";
+    }
+    const lead = leadKey ? getLead(db as any, leadKey) : undefined;
+    if (!lead) return json({ error: "Lead not found (pass a lead_key or a sent_id from the sent log)" }, 404);
+
+    const testRecipient = getTestRecipient(db as any);
+    const from = (body.from ?? "").trim() || testRecipient || getFirstEmail(lead) || `test-${Date.now()}@example.invalid`;
+    const messageId = `sim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const payload = {
+      items: [
+        {
+          MessageId: messageId,
+          From: { Address: from, Name: "" },
+          Subject: `Re: ${lead.pitch_subject ?? ""}`.trim(),
+          RawTextBody: text,
+          SentAtDate: new Date().toISOString(),
+          SpamScore: 0,
+        },
+      ],
+    };
+
+    const synthetic = new Request("http://internal.inbound/inbound-webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const res = await handleInboundWebhook(synthetic, env, db as any);
+    return withCors(res);
   }
 
   private async handleSecrets(request: Request, env: Record<string, unknown>): Promise<Response> {

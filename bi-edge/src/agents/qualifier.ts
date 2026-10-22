@@ -4,6 +4,7 @@ import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdep
 import type Database from "better-sqlite3";
 import type { Lead } from "../db/types.js";
 import { updateLead } from "../db/leads.js";
+import { logLlmTrace, getSetting } from "../db/index.js";
 import { validateLead, parseIcpFrontMatter, type IcpConfig, type ValidationResult } from "../icp-validator.js";
 import {
   JevClient,
@@ -35,6 +36,17 @@ must_have: [active_registry_status]
 
 function parseIcpConfig(): IcpConfig {
   return parseIcpFrontMatter(ICP_SKILL);
+}
+
+/**
+ * Append the operator's free-form ICP notes (set in the UI, stored as
+ * `campaign:icpNotes`) to the digest so the classifier sees them. The
+ * structured NACE/size/age gates in icp-validator still apply unchanged —
+ * notes steer the LLM's judgment, they don't override the deterministic gate.
+ */
+function withIcpNotes(db: Database.Database, digest: string): string {
+  const notes = (getSetting(db, "campaign:icpNotes") ?? "").trim();
+  return notes ? `${digest}\n\nOperator notes on who to prioritise:\n${notes}` : digest;
 }
 
 function leadToIcpInput(lead: Lead) {
@@ -95,8 +107,10 @@ async function llmClassifyLeads(
   leads: JevLeadInput[],
   icpDigest: string,
   env: Record<string, unknown>,
+  db?: Database.Database,
 ): Promise<JevClassification[]> {
   if (leads.length === 0) return [];
+  const t0 = Date.now();
 
   const res = await gatewayFetchWithBackoff("/v1/chat/completions", {
     method: "POST",
@@ -134,6 +148,16 @@ async function llmClassifyLeads(
   }
 
   const raw = parseLlmJson(await res.json());
+  if (db) {
+    logLlmTrace(db, {
+      stage: "classify",
+      leadKey: leads.length === 1 ? leads[0].key : `${leads.length} leads`,
+      model: String(env.AD_MODEL ?? ""),
+      promptExcerpt: JSON.stringify({ icp: icpDigest, leads: leads.map((l) => ({ key: l.key, name: l.name, sic: l.sic ?? null })) }),
+      rawResponse: JSON.stringify(raw),
+      latencyMs: Date.now() - t0,
+    });
+  }
   const arr: any[] = Array.isArray(raw.classifications)
     ? raw.classifications
     : Array.isArray(raw)
@@ -168,11 +192,12 @@ async function classifyLeads(
   leads: JevLeadInput[],
   icpDigest: string,
   env: Record<string, unknown>,
+  db?: Database.Database,
 ): Promise<JevClassification[]> {
   if (jevConfigured(env)) {
     return buildJevClient(env).classifyBatch(leads, icpDigest);
   }
-  return llmClassifyLeads(leads, icpDigest, env);
+  return llmClassifyLeads(leads, icpDigest, env, db);
 }
 
 function leadToJevInput(lead: Lead): JevLeadInput {
@@ -244,12 +269,12 @@ export async function runQualifier(
     return classification;
   }
 
-  const icpDigest = buildIcpDigest(icpConfig);
+  const icpDigest = withIcpNotes(db, buildIcpDigest(icpConfig));
 
   let raw: JevClassification | undefined;
   let classifyError: string | null = null;
   try {
-    const classifications = await classifyLeads([leadToJevInput(lead)], icpDigest, env);
+    const classifications = await classifyLeads([leadToJevInput(lead)], icpDigest, env, db);
     raw = classifications[0];
   } catch (err) {
     classifyError = err instanceof Error ? err.message : "unknown";
@@ -293,13 +318,13 @@ export async function classifyBatch(
   env: Record<string, unknown>,
 ): Promise<Classification[]> {
   const icpConfig = parseIcpConfig();
-  const icpDigest = buildIcpDigest(icpConfig);
+  const icpDigest = withIcpNotes(db, buildIcpDigest(icpConfig));
 
   const jevInputs = leads.map(leadToJevInput);
 
   let rawClassifications: JevClassification[];
   try {
-    rawClassifications = await classifyLeads(jevInputs, icpDigest, env);
+    rawClassifications = await classifyLeads(jevInputs, icpDigest, env, db);
   } catch (err) {
     // Classification backend unavailable (JEV down or LLM error) → mark every
     // lead COLD so the pipeline continues instead of stalling on raw.

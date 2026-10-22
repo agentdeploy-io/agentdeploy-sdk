@@ -8,3 +8,4 @@ export * from "./sent-log.js";
 export * from "./replies-log.js";
 export * from "./blacklist.js";
 export * from "./settings.js";
+export * from "./llm-traces.js";

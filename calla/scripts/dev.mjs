@@ -25,7 +25,7 @@
  */
 
 import { spawn, execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -96,6 +96,34 @@ for (const p of plannedPorts) {
   }
 }
 
+// ── Brain LLM config ─────────────────────────────────────────────
+// The brain needs an OpenAI-compatible gateway. Reuse the engine's Chutes
+// credentials from bi-edge/.dev.vars (AD_GATEWAY_*) so there is a single
+// source of truth for local keys. Shell-provided LLM_* always win.
+function brainLlmEnv() {
+  const out = {};
+  try {
+    const vars = {};
+    for (const line of readFileSync(resolve(ENGINE_DIR, ".dev.vars"), "utf8").split("\n")) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (m && m[1]) vars[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    }
+    if (vars.AD_GATEWAY_BASE_URL) {
+      let base = vars.AD_GATEWAY_BASE_URL.replace(/\/+$/, "");
+      if (!/\/v\d+$/.test(base)) base += "/v1";
+      out.LLM_BASE_URL = base;
+    }
+    if (vars.AD_GATEWAY_API_KEY) out.LLM_API_KEY = vars.AD_GATEWAY_API_KEY;
+    if (vars.AD_MODEL) out.LLM_MODEL = vars.AD_MODEL;
+  } catch {
+    /* no .dev.vars — brain boots unconfigured, LLM calls fail with a hint */
+  }
+  for (const k of ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"]) {
+    if (process.env[k]) out[k] = process.env[k];
+  }
+  return out;
+}
+
 // ── Service definitions ──────────────────────────────────────────
 const services = [];
 
@@ -143,7 +171,7 @@ if (!NO_BRAIN) {
     cwd: resolve(ROOT, "apps/brain"),
     cmd: "npx",
     args: ["tsx", "watch", "src/server.ts"],
-    env: { PORT: String(BRAIN_PORT) },
+    env: { PORT: String(BRAIN_PORT), ...brainLlmEnv() },
     readyUrl: `http://127.0.0.1:${BRAIN_PORT}/health`,
     required: false, // UI degrades gracefully when the brain is down
   });

@@ -28,6 +28,8 @@ import {
   isSendEnabled,
   isDryRun,
   getDailyCap,
+  isTestMode,
+  getTestRecipient,
   countSentToday,
   listCrawlRuns,
   SCHEMA_V1,
@@ -100,7 +102,9 @@ async function sendReplyDraft(
   if (lead.status === "opted_out") return `Lead ${lead.key} has opted out — not sending`;
   if (lead.status === "rejected") return `Lead ${lead.key} was rejected — not sending`;
 
-  const to = entry.reply_from || getFirstEmail(lead);
+  const testRecipient = getTestRecipient(db);
+  const useTest = isTestMode(db) && testRecipient !== "";
+  const to = useTest ? testRecipient : (entry.reply_from || getFirstEmail(lead));
   if (!to) return `No recipient address for reply ${id}`;
 
   if (isPaused(db)) return "Pipeline is paused — run /resume first";

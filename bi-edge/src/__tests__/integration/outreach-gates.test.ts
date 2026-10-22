@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Database from "better-sqlite3";
 import type DatabaseType from "better-sqlite3";
 import { runMigrations, upsertLead, getLead, setSetting, addToBlacklist, logSentEmail, getSentByLead, countSentToday } from "../../db/index.js";
-import { runGateStack, runOutreach } from "../../agents/outreach.js";
+import { runGateStack, runOutreach, getFirstEmail } from "../../agents/outreach.js";
 import type { Lead } from "../../db/types.js";
 
 function createTestDb(): DatabaseType.Database {
@@ -184,13 +184,15 @@ describe("outreach-gates integration", () => {
     expect(result.reason).toMatch(/no contact/);
   });
 
-  it("dry-run mode: all gates pass but email field is empty", () => {
+  it("dry-run mode: all gates pass; email names the intended target but nothing sends", () => {
     setSetting(db, "dryRun", "true");
     const lead = makeFullyPreparedLead();
     const result = runGateStack(db, lead, env);
     expect(result.proceed).toBe(true);
     expect(result.dryRun).toBe(true);
-    expect(result.email).toBe("");
+    // email always carries the intended recipient now (test mode relies on it);
+    // runOutreach only calls sendViaBrevo when !dryRun.
+    expect(result.email).toBe(getFirstEmail(lead));
     expect(result.statusStr).toBe("dry-run");
   });
 

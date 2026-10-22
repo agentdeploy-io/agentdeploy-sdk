@@ -5,7 +5,7 @@ import { setSetting, getSetting, getSettingsWithDefaults } from "../../db/settin
 import { createCrawlRun, updateCrawlRun, getCrawlRun, listCrawlRuns } from "../../db/crawl-runs.js";
 import { upsertLead, getLead, countByStage } from "../../db/leads.js";
 import { logSentEmail, countSentToday } from "../../db/sent-log.js";
-import { runGateStack } from "../../agents/outreach.js";
+import { runGateStack, getFirstEmail } from "../../agents/outreach.js";
 import type { Lead, CrawlRun } from "../../db/types.js";
 
 const VM_RATE_PER_MINUTE = 0.002;
@@ -604,7 +604,9 @@ describe("cost tracking: gate-stack budget enforcement", () => {
 
     expect(result.proceed).toBe(true);
     expect(result.dryRun).toBe(true);
-    expect(result.email).toBe("");
+    // email names the intended target even on dry-run (test mode relies on it);
+    // no send happens because runOutreach skips sendViaBrevo when dryRun.
+    expect(result.email).toBe(getFirstEmail(lead));
     expect(result.statusStr).toBe("dry-run");
   });
 });

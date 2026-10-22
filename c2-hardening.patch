@@ -1,0 +1,57 @@
+From: C2 hardening
+Subject: [PATCH] Drop plaintext reveal from /internal/.../secrets/revealed
+
+diff --git a/deployment-service/src/routes/internal.ts b/deployment-service/src/routes/internal.ts
+--- a/deployment-service/src/routes/internal.ts
++++ b/deployment-service/src/routes/internal.ts
+@@ -74,7 +74,6 @@
+ import {
+   storeEncryptedSecret,
+   storeEncryptedSecrets,
+-  getDecryptedSecrets,
+ } from "../services/secrets-envelope.js";
+ import { writeApiKeyAuditLog } from "../services/api-key-audit.js";
+ import {
+@@ -2560,37 +2559,20 @@
+ 
+ // ── Revealed secrets (sealed-protected, audit logged) ──────────────────────
+ 
+-// NOTE: This endpoint intentionally returns secret values.
+-// It MUST be protected by sealed-variable logic in the UI layer
+-// (never return values marked as `sealed: true` to the frontend).
+-// For now, we only return keys with status — no values.
+-// The actual decrypted values are only available server-side
+-// for deploy-time injection.
++// NOTE: This endpoint returns secret METADATA only (key + configured/status).
++// Secret VALUES are never returned over HTTP. They are only available
++// server-side for deploy-time injection via the broker (/v1/broker/secrets,
++// broker-token authed) or the Cloudflare Workers secret bindings.
+ internalRoute.get("/internal/deployments/:id/secrets/revealed", async (c) => {
+   const deploymentId = c.req.param("id");
+   const userId = c.req.query("userId");
+-  const includeValues = c.req.query("includeValues") === "true";
+-
+   if (!userId) return fail(c, "VALIDATION_ERROR", "userId is required", 400);
+ 
+   const deployment = await getDeploymentById(deploymentId, userId);
+   if (!deployment) {
+     return fail(c, "NOT_FOUND", "Deployment not found", 404);
+   }
+-
+-  if (includeValues) {
+-    // Returns decrypted values — protected endpoint, audit logged
+-    logger.info({ deploymentId, userId }, "Decrypted secrets requested — audit event");
+-    const secrets = await getDecryptedSecrets(deploymentId);
+-    return success(c, {
+-      secrets: secrets.map((s) => ({
+-        key: s.secretKey,
+-        value: s.plaintext, // Only returned on explicit request
+-      })),
+-    });
+-  }
+-
+-  // Default: metadata only, no values
++  // Metadata only - never the plaintext values.
+   const result = await getDeploymentSecrets(deploymentId, userId);
+   return success(c, result);
+ });

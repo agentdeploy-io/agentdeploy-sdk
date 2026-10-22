@@ -61,13 +61,6 @@ With a Railway-style env dump, an attacker obtains, in priority order:
   ownership check is just a query parameter.
   *Files:* `routes/internal.ts:2569`, `middleware/internal-auth.ts`.
 
-- **C3 — Live committed credentials, still unresolved.**
-  `agent-recon/.env` and `agent-recon/src/.env` are **tracked in git and still on
-  disk**, containing 7 services' credentials incl. a plaintext Google/LinkedIn
-  password (see `plans/SECURITY_ADVISORY.md`, 2026-10-01, status OPEN). The parent
-  repo's `.gitignore` has **no `.env` rule**, and the git-history rewrite was never
-  performed. Verified via `git ls-files agent-recon`.
-
 ### High
 
 - **H1 — Broker token is a long-lived plaintext secret on the machine env, and its
@@ -97,15 +90,11 @@ With a Railway-style env dump, an attacker obtains, in priority order:
   keys, and rotating `API_KEY_SECRET` invalidates every key. The 14-char
   `key_prefix` is stored in cleartext (`lib/api-keys.ts`).
 
-- **M2 — `bi-edge` customer data API has effectively no auth.** `verifyJwt()`
-  returns `true` when `AD_JWT_SECRET` is unset, and even when set only checks that
-  the Bearer token is non-empty (`packages/bi-edge/src/routes/data-api.ts:28-34`).
-
-- **M3 — Logger redaction is partial.** pino redacts
+- **M2 — Logger redaction is partial.** pino redacts
   `authorization/token/apiKey/secret/password` but not
   `secretValue`/`secret_value`/`plaintext`/`value`/`key` (`logger.ts:15-28`).
 
-- **M4 — One shared internal secret, no least-privilege.** All `/internal/*` routes
+- **M3 — One shared internal secret, no least-privilege.** All `/internal/*` routes
   share one `INTERNAL_SERVICE_TOKEN` with no per-route or per-tenant scoping; the
   origin allowlist defaults to `http://localhost:2000`.
 
@@ -121,10 +110,8 @@ With a Railway-style env dump, an attacker obtains, in priority order:
 
 ## Recommended remediation, in order
 
-1. **Today:** rotate every credential in `agent-recon/.env` (advisory checklist still
-   open), then `git filter-repo`/BFG to purge history, force-push, add a root
-   `.gitignore` `.env` rule, and install a pre-commit + CI secret scanner
-   (`gitleaks`/`trufflehog`).
+1. Add a pre-commit + CI secret scanner (`gitleaks`/`trufflehog`) so a stray key can
+   never reach git — cheap insurance, independent of the fixes below.
 2. **Move the KEK out of env** into a KMS / external secrets manager (AWS KMS, GCP
    Secret Manager, Vault, or Doppler). The `kek: "kms"` hook already exists in
    `envelope.ts` — implement it.
@@ -143,8 +130,6 @@ With a Railway-style env dump, an attacker obtains, in priority order:
    secrets manager**, not `env.ts`.
 7. **Tighten pino redaction** (`secretValue`, `secret_value`, `plaintext`, `value`,
    `key`) and scope `/internal/*` origins/tokens per service.
-8. **Fix `bi-edge` `verifyJwt`** to actually verify a signature and fail closed when
-   the secret is unset.
 
 ---
 

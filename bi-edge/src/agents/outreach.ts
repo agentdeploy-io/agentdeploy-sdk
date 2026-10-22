@@ -12,6 +12,8 @@ import {
   isDryRun,
   getDailyCap,
   getSetting,
+  isTestMode,
+  getTestRecipient,
 } from "../db/index.js";
 
 export interface GateResult {
@@ -124,7 +126,11 @@ export function runGateStack(
   };
 
   const sentToday = countSentToday(db);
-  const email = getFirstEmail(lead);
+  const testRecipient = getTestRecipient(db);
+  // Test mode redirects the send to the operator's own inbox — gates like
+  // approval/pitch/dry-run/cap still apply, only the recipient changes.
+  const useTest = isTestMode(db) && testRecipient !== "";
+  const email = useTest ? testRecipient : getFirstEmail(lead);
   const name = lead.name;
   const subject = lead.pitch_subject ?? "";
   const body = lead.pitch_body ?? "";
@@ -141,9 +147,9 @@ export function runGateStack(
     reason = `lead is not approved yet (status: ${lead.status ?? lead.stage} — run /approve first)`;
   } else if (!subject || !body) {
     reason = "lead has no pitch (re-run writer to draft)";
-  } else if (!email) {
+  } else if (!email && !useTest) {
     reason = "no contact address (run /verify first)";
-  } else if (!hasMxOk(lead)) {
+  } else if (!useTest && !hasMxOk(lead)) {
     reason = "email MX check failed";
   } else if (isPaused(db)) {
     reason = "agent is paused (run /resume first)";
@@ -153,7 +159,7 @@ export function runGateStack(
     reason = `daily cap reached (${sentToday}/${settings.dailyCap})`;
   }
 
-  if (!reason && lead) {
+  if (!reason && lead && !useTest) {
     const emailDomain = email.split("@")[1] ?? "";
     const blHit = isBlacklisted(db, {
       email,
@@ -224,7 +230,7 @@ export function runGateStack(
     proceed,
     reason,
     dryRun: settings.dryRun,
-    email: proceed && !settings.dryRun ? email : "",
+    email: proceed ? email : "",
     name,
     subject,
     html,
@@ -282,7 +288,7 @@ export async function runOutreach(
   if (gate.dryRun) {
     logSentEmail(db, {
       lead_key: lead.key,
-      email: getFirstEmail(lead),
+      email: gate.email,
       subject: gate.subject,
       message_id: null,
       status: "dry-run",

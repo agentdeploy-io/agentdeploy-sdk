@@ -4,7 +4,7 @@ import { runMigrations } from "../db/migrations.js";
 import { setSetting } from "../db/settings.js";
 import { addToBlacklist } from "../db/blacklist.js";
 import { logSentEmail } from "../db/sent-log.js";
-import { runGateStack } from "../agents/outreach.js";
+import { runGateStack, getFirstEmail } from "../agents/outreach.js";
 import type { Lead } from "../db/types.js";
 
 function createDb(): Database.Database {
@@ -114,13 +114,15 @@ describe("gate-stack property tests", () => {
     expect(result.reason).toMatch(/sendEnabled/);
   });
 
-  it("gate 7: dryRun = true → proceed but email field is empty", () => {
+  it("gate 7: dryRun = true → proceed; email carries the intended target but nothing sends", () => {
     setSetting(db, "dryRun", "true");
     const lead = makeApprovedLead();
     const result = runGateStack(db, lead, env);
     expect(result.proceed).toBe(true);
     expect(result.dryRun).toBe(true);
-    expect(result.email).toBe("");
+    // email now always names the intended recipient (test mode relies on it);
+    // runOutreach only calls sendViaBrevo when !dryRun.
+    expect(result.email).toBe(getFirstEmail(lead));
     expect(result.statusStr).toBe("dry-run");
   });
 

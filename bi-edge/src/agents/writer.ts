@@ -4,6 +4,7 @@ import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdep
 import type Database from "better-sqlite3";
 import type { Lead } from "../db/types.js";
 import { updateLead } from "../db/leads.js";
+import { logLlmTrace } from "../db/index.js";
 import type { EvidencePack } from "./researcher.js";
 
 export interface AiAgentRecommendation {
@@ -80,6 +81,7 @@ export async function runWriter(
     one_liner: String(env.BRAND_ONE_LINER ?? "").trim(),
   };
   const system = `${buildIdentityPersona(env)}${WRITER_TASK}`;
+  const t0 = Date.now();
   const res = await gatewayFetchWithBackoff("/v1/chat/completions", {
     method: "POST",
     headers: gatewayHeaders(env),
@@ -114,6 +116,14 @@ export async function runWriter(
   }
 
   const raw = parseLlmJson(await res.json());
+  logLlmTrace(db, {
+    stage: "write",
+    leadKey: lead.key,
+    model: String(env.AD_MODEL ?? ""),
+    promptExcerpt: JSON.stringify({ brand, business: { name: lead.name, sic: lead.sic ?? "", website: lead.website ?? "" }, evidence }),
+    rawResponse: JSON.stringify(raw),
+    latencyMs: Date.now() - t0,
+  });
 
   const output: WriterOutput = {
     ai_agents_needed: Array.isArray(raw.ai_agents_needed)

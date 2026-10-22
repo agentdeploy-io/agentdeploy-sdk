@@ -7,6 +7,7 @@ import {
   updateLead,
   logReply,
   listRecentSent,
+  logLlmTrace,
   SCHEMA_V1,
   runMigrations,
 } from "../db/index.js";
@@ -87,6 +88,7 @@ async function classifyReplyIntent(
   items: NormalizedItem[],
   sentLeads: Array<{ key: string; name: string; email: string; subject: string }>,
   env: Record<string, unknown>,
+  db?: DatabaseType.Database,
 ): Promise<
   Array<{
     leadKey: string;
@@ -100,6 +102,7 @@ async function classifyReplyIntent(
   }>
 > {
   const brandName = String(env.BRAND_NAME ?? "our business");
+  const t0 = Date.now();
 
   const res = await gatewayFetchWithBackoff("/v1/chat/completions", {
     method: "POST",
@@ -129,7 +132,18 @@ Return ONLY JSON: {"replies": [{"leadKey":"...","email":"...","intent":"...","pe
   if (!res.ok) return [];
 
   const raw = parseLlmJson(await res.json());
-  const replies = Array.isArray(raw.replies) ? raw.replies : [];
+  const repliesRaw: any[] = Array.isArray(raw.replies) ? raw.replies : [];
+  if (db) {
+    logLlmTrace(db, {
+      stage: "reply-classify",
+      leadKey: repliesRaw.length === 1 ? String(repliesRaw[0]?.leadKey ?? "") : `${repliesRaw.length} replies`,
+      model: String(env.AD_MODEL ?? ""),
+      promptExcerpt: JSON.stringify({ leads: sentLeads.map((l) => l.key), events: items.map((i) => ({ from: i.from, subject: i.subject, body: i.body.slice(0, 200) })) }),
+      rawResponse: JSON.stringify(raw),
+      latencyMs: Date.now() - t0,
+    });
+  }
+  const replies = repliesRaw;
 
   return replies.map((r: any) => ({
     leadKey: String(r.leadKey ?? ""),
@@ -154,10 +168,12 @@ async function draftReply(
     replySubject: string;
     replyBody: string;
   }>,
-  env: Record<string, unknown>,
+   env: Record<string, unknown>,
+  db?: DatabaseType.Database,
 ): Promise<Array<{ key: string; subject: string; body: string }>> {
   const brandName = String(env.BRAND_NAME ?? "");
   const calendly = String(env.CALENDLY_URL ?? "");
+  const t0 = Date.now();
 
   const res = await gatewayFetchWithBackoff("/v1/chat/completions", {
     method: "POST",
@@ -188,6 +204,16 @@ Return ONLY JSON: {"replies":[{"key":"...","subject":"Re: ...","body":"..."}]}`,
   if (!res.ok) return [];
 
   const raw = parseLlmJson(await res.json());
+  if (db) {
+    logLlmTrace(db, {
+      stage: "reply-draft",
+      leadKey: threads.length === 1 ? threads[0].key : `${threads.length} threads`,
+      model: String(env.AD_MODEL ?? ""),
+      promptExcerpt: JSON.stringify(threads.map((t) => ({ key: t.key, leadSubject: t.leadSubject, replyBody: t.replyBody.slice(0, 200) }))),
+      rawResponse: JSON.stringify(raw),
+      latencyMs: Date.now() - t0,
+    });
+  }
   return Array.isArray(raw.replies) ? raw.replies : [];
 }
 
@@ -263,7 +289,7 @@ export async function handleInboundWebhook(
       }
     }
 
-    const classified = await classifyReplyIntent(items, sentLeads, env);
+    const classified = await classifyReplyIntent(items, sentLeads, env, db);
 
     let matched = 0;
     let interested = 0;
@@ -318,7 +344,7 @@ export async function handleInboundWebhook(
 
     let drafted = 0;
     if (draftThreads.length > 0) {
-      const drafts = await draftReply(draftThreads, env);
+      const drafts = await draftReply(draftThreads, env, db);
       for (const draft of drafts) {
         const entry = db
           .prepare(

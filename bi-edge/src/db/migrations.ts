@@ -8,6 +8,19 @@ interface MigrationRecord {
 
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
+  2: `
+    CREATE TABLE IF NOT EXISTS llm_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stage TEXT,
+      lead_key TEXT,
+      model TEXT,
+      prompt_excerpt TEXT,
+      raw_response TEXT,
+      latency_ms INTEGER,
+      at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_llm_traces_id ON llm_traces(id);
+  `,
 };
 
 export function runMigrations(db: Database.Database): number {

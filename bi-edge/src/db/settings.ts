@@ -80,3 +80,17 @@ export function getDailyCap(db: Database.Database): number {
   if (raw === undefined) return DEFAULTS.dailyCap;
   return Number(raw);
 }
+
+/**
+ * Test mode: when enabled AND a recipient is set, every send (initial pitch
+ * or reply) is redirected to the operator's own test inbox. Gates still
+ * apply (dry-run / sendEnabled / cap) — test mode only changes WHO receives,
+ * so a real lead can never be emailed while testing.
+ */
+export function isTestMode(db: Database.Database): boolean {
+  return getSetting(db, "testMode") === "true";
+}
+
+export function getTestRecipient(db: Database.Database): string {
+  return (getSetting(db, "testRecipient") ?? "").trim();
+}
