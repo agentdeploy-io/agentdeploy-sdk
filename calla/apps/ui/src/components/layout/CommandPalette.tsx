@@ -18,6 +18,7 @@ import {
   Search,
   Settings,
   SunMoon,
+  Timer,
 } from "lucide-react";
 import { isModuleEnabled, type ModuleId } from "@calla/shared";
 import { buildAgentRoute, useAgentRegistry } from "@/hooks";
@@ -84,6 +85,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         keywords: "leads table bulk data g d",
         icon: <Database className="size-4" />,
         action: () => onNavigate("/data"),
+        module: "data",
+      },
+      {
+        id: "nav-operations",
+        label: "Operations",
+        description: "Start/stop crawler, edit crons, sending controls",
+        group: "Navigate",
+        keywords: "operations cron schedules crawler start stop pipeline g o",
+        icon: <Timer className="size-4" />,
+        action: () => onNavigate("/operations"),
         module: "data",
       },
       {

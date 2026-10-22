@@ -44,6 +44,7 @@ import type {
 import { AUTH_DISABLED } from "@/constants/auth";
 import { CALLA_DEV_AGENTS } from "@/constants/agents";
 import { useLeads, useUpdateLead, type DataFilters } from "@/hooks/useDataApi";
+import { authFetch } from "@/hooks/useAuthFetch";
 import { useCoreDeployment } from "@/hooks/useCoreDeployment";
 import { useCallaEvents } from "@/hooks/useCallaEvents";
 import { toast } from "@/hooks/useToast";
@@ -104,6 +105,9 @@ export interface UseApprovalsResult {
 // ─── Constants ───────────────────────────────────────────────────
 
 const MASTRA_POLL_INTERVAL_MS = 5_000;
+
+/** How often the inbox re-polls the engine for pending reply drafts. */
+const REPLY_DRAFT_POLL_MS = 15_000;
 
 /** Engine cap for GET /cmd/data pageSize. */
 const WEBSITE_POOL_PAGE_SIZE = 500;
@@ -188,8 +192,15 @@ function rowToApproval(
   };
 
   switch (opts.toolName) {
-    case "review-reply":
-      return { ...base, summary: `Approve reply draft: ${rowSummary(row, rowKey)}` };
+    case "review-reply": {
+      const from = str(row.reply_from);
+      const intent = str(row.intent);
+      const who = from ? `from ${from}` : "reply draft";
+      return {
+        ...base,
+        summary: `Reply ${who}${intent ? ` (${intent})` : ""} — ${rowSummary(row, rowKey)}: ${str(row.draft) ? `“${str(row.draft)!.slice(0, 120)}${(str(row.draft)!.length ?? 0) > 120 ? "…" : ""}”` : "(no draft text)"}`,
+      };
+    }
     case "review-website":
       return {
         ...base,
@@ -335,26 +346,54 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
   // ─── Source 1: data plane (reply drafts + flagged websites) ───
   // Lead batches live in the Data section (/data) with bulk approval —
   // the inbox only carries these low-volume per-item decisions.
-  // Filter objects are re-created on refreshKey so useLeads' effect
-  // (which depends on the filters identity) actually re-fires.
+  //
+  // Reply drafts come from the engine's replies_log (GET /cmd/replies?
+  // status=pending) — the ACTUAL drafted replies, not leads. Approving one
+  // runs /send-reply (sends it via Brevo, honours dryRun); rejecting runs
+  // /discard-reply. Both go through /cmd/supervisor below in decide().
+  //
+  // The engine silently ignores website_status params, so fetch a broad
+  // page and flag websites client-side (phantom-approvals fix). Filter
+  // objects are re-created on refreshKey so useLeads' effect re-fires.
   // Engine constraint: GET /cmd/data supports ONLY single-value exact
   // filters — keep every array facet to ONE value.
 
-  const replyFilters = useMemo<DataFilters>(
-    () => ({ stage: ["sent"], status: ["pending"] }),
-    [refreshKey],
-  );
-  // The engine silently ignores website_status params, so fetch a broad
-  // page and flag websites client-side (phantom-approvals fix).
   const websitePoolFilters = useMemo<DataFilters>(() => ({}), [refreshKey]);
 
-  const replies = useLeads(replyFilters, 1, dataPageSize, deploymentId);
   const websitePool = useLeads(websitePoolFilters, 1, WEBSITE_POOL_PAGE_SIZE, deploymentId);
   const { update: updateRow } = useUpdateLead(deploymentId);
 
+  // ── Reply drafts (replies_log) — polled, independent of the leads fetch ──
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, unknown>[]>([]);
+  const fetchReplyDrafts = useCallback(async () => {
+    if (!deploymentId) {
+      setReplyDrafts([]);
+      return;
+    }
+    try {
+      const res = await authFetch(`/d/${deploymentId}/cmd/replies?status=pending`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return; // keep last known list on transient errors
+      const json = (await res.json()) as { replies?: Record<string, unknown>[] };
+      // rowToApproval resolves rowKey via str(row.key) — normalise the
+      // numeric replies_log id into a string key.
+      setReplyDrafts((json.replies ?? []).map((r) => ({ ...r, key: String(r.id) })));
+    } catch {
+      // network down — keep last known list, surface nothing (best effort)
+    }
+  }, [deploymentId]);
+
+  useEffect(() => {
+    fetchReplyDrafts();
+    const interval = setInterval(fetchReplyDrafts, REPLY_DRAFT_POLL_MS);
+    return () => clearInterval(interval);
+  }, [fetchReplyDrafts, refreshKey]);
+
   const dataApprovals = useMemo<ApprovalRequest[]>(() => {
     const out: ApprovalRequest[] = [];
-    for (const row of replies.data.rows) {
+    for (const row of replyDrafts) {
       const a = rowToApproval(row, { toolName: "review-reply", risk: "high", deploymentId });
       if (a) out.push(a);
     }
@@ -365,10 +404,10 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
       if (a) out.push(a);
     }
     return out;
-  }, [replies.data.rows, websitePool.data.rows, deploymentId]);
+  }, [replyDrafts, websitePool.data.rows, deploymentId]);
 
-  const dataError = replies.error ?? websitePool.error;
-  const dataLoading = deploymentId ? replies.loading || websitePool.loading : false;
+  const dataError = websitePool.error;
+  const dataLoading = deploymentId ? websitePool.loading : false;
 
   // ─── Source 2: core VM tasks ──────────────────────────────────
 
@@ -579,8 +618,32 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
   // Stable action handles (the wrapper objects re-create every render).
   const coreResumeTask = core.resumeTask;
   const coreRefetch = core.refetch;
-  const repliesRefetch = replies.refetch;
   const websitePoolRefetch = websitePool.refetch;
+
+  /** Approve/reject a reply draft via the engine supervisor (G3). */
+  const decideReplyDraft = useCallback(
+    async (draftId: string, approve: boolean): Promise<void> => {
+      if (!deploymentId) throw new Error("No deployment selected");
+      const cmd = approve ? "/send-reply" : "/discard-reply";
+      const res = await authFetch(`/d/${deploymentId}/cmd/supervisor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: `${cmd} ${draftId}` }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const json = (await res.json()) as { reply?: string; error?: string };
+      if (!res.ok) throw new Error(json.error ?? `${res.status} ${res.statusText}`.trim());
+      const detail = json.reply ?? "";
+      if (approve) {
+        const failed = detail.startsWith("Reply") && /not found|no draft|opted out|rejected|paused|sendEnabled is false|Daily cap|failed to send/i.test(detail);
+        if (failed) throw new Error(detail);
+        toast.success("Reply draft approved", detail);
+      } else {
+        toast.success("Reply draft discarded", detail);
+      }
+    },
+    [deploymentId],
+  );
 
   const decide = useCallback(
     async (id: string, decision: ApprovalDecision): Promise<void> => {
@@ -595,8 +658,13 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
         switch (approval.source) {
           case "data": {
             if (!approval.rowKey) throw new Error("Missing data row key");
-            const ok = await updateRow(approval.rowKey, dataPatchFor(approval, decision));
-            if (!ok) throw new Error("Data-plane update failed");
+            if (approval.toolName === "review-reply") {
+              // Approving a reply draft SENDS it (G3); rejecting discards it.
+              await decideReplyDraft(approval.rowKey, decision.approved);
+            } else {
+              const ok = await updateRow(approval.rowKey, dataPatchFor(approval, decision));
+              if (!ok) throw new Error("Data-plane update failed");
+            }
             break;
           }
           case "core": {
@@ -638,6 +706,10 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
         if (approval.source === "mastra") {
           setRefreshKey((k) => k + 1);
         }
+        if (approval.source === "data" && approval.toolName === "review-reply") {
+          // Draft left the pending set (sent/discarded) — pull it now.
+          fetchReplyDrafts();
+        }
       } catch (err) {
         // Roll back + surface.
         setOverrides((prev) => {
@@ -651,7 +723,7 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
         );
       }
     },
-    [updateRow, coreResumeTask],
+    [updateRow, coreResumeTask, decideReplyDraft, fetchReplyDrafts],
   );
 
   // ─── refetch ───────────────────────────────────────────────────
@@ -660,10 +732,10 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
     // Bumping refreshKey re-creates the data-plane filter identities, which
     // re-fires useLeads' effects; the extra refetch() calls clear stale errors.
     setRefreshKey((k) => k + 1);
-    repliesRefetch();
+    fetchReplyDrafts();
     websitePoolRefetch();
     if (coreEnabled) coreRefetch();
-  }, [repliesRefetch, websitePoolRefetch, coreRefetch, coreEnabled]);
+  }, [fetchReplyDrafts, websitePoolRefetch, coreRefetch, coreEnabled]);
 
   const error = dataError ?? coreError ?? mastraError ?? eventsError;
   const isLoading = dataLoading || coreLoading || (mastraEnabled ? mastraLoading : false);

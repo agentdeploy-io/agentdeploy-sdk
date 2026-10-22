@@ -10,6 +10,9 @@ import {
   deleteLead,
   countByStage,
   listCrawlRuns,
+  getPendingDrafts,
+  listRecentReplies,
+  listRecentSent,
   SCHEMA_V1,
   runMigrations,
 } from "../db/index.js";
@@ -116,6 +119,14 @@ export async function handleDataApi(
 
   if (url.pathname === "/cmd/pipeline") {
     return handlePipeline(externalDb);
+  }
+
+  if (url.pathname === "/cmd/replies" && request.method === "GET") {
+    return handleReplies(url, externalDb);
+  }
+
+  if (url.pathname === "/cmd/sent" && request.method === "GET") {
+    return handleSentLog(url, externalDb);
   }
 
   return new Response(
@@ -459,6 +470,65 @@ function handleCrawlRuns(url: URL, externalDb?: DatabaseType.Database): Response
     const runs = listCrawlRuns(db, limit);
     if (own) db.close();
     return new Response(JSON.stringify({ runs }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e: any) {
+    if (own) db.close();
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+/**
+ * GET /cmd/replies — reply drafts for the HITL inbox. Enriches each
+ * replies_log row with its lead's name/country so the UI can render a
+ * human-friendly card. `?status=pending` (default) returns only drafts
+ * awaiting a human decision; omit for the full recent history.
+ */
+function handleReplies(url: URL, externalDb?: DatabaseType.Database): Response {
+  const { db, own } = useDb(externalDb);
+  try {
+    const status = url.searchParams.get("status");
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 500);
+    let rows;
+    if (status && status !== "pending") {
+      // Full history path: reuse the recent list, then filter client-side.
+      rows = listRecentReplies(db, limit).filter((r) => r.draft_status === status);
+    } else {
+      rows = getPendingDrafts(db).slice(0, limit);
+    }
+    const enriched = rows.map((r) => {
+      const lead = getLead(db, r.lead_key);
+      return {
+        ...r,
+        lead_name: lead?.name ?? r.lead_key,
+        lead_country: lead?.country ?? "",
+        lead_status: lead?.status ?? null,
+      };
+    });
+    if (own) db.close();
+    return new Response(JSON.stringify({ replies: enriched }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e: any) {
+    if (own) db.close();
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+/** GET /cmd/sent — the sent-email log (most recent first). */
+function handleSentLog(url: URL, externalDb?: DatabaseType.Database): Response {
+  const { db, own } = useDb(externalDb);
+  try {
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 50, 200);
+    const entries = listRecentSent(db, limit);
+    if (own) db.close();
+    return new Response(JSON.stringify({ sent: entries }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e: any) {

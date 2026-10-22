@@ -33,6 +33,7 @@ import type { Route, ViewId } from "@/types/ui";
 export const VALID_VIEWS: ViewId[] = [
   "fleet",
   "data",
+  "operations",
   "inbox",
   "conversations",
   "reports",

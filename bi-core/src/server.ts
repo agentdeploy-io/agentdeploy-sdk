@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { mastra } from "./mastra/index.js";
+import { installFetchTimeout } from "./http.js";
 import type { CoreMessage } from "ai";
 
 // Dev convenience: load packages/bi-core/.env when present. Variables already
@@ -18,6 +19,9 @@ try {
 } catch {
   /* no .env — fine */
 }
+
+// Must run after .env is loaded so HTTP_TIMEOUT_MS is honored.
+installFetchTimeout(Number(process.env["HTTP_TIMEOUT_MS"] || 30_000));
 
 const PORT = Number(process.env["PORT"] || 4111);
 

@@ -23,6 +23,7 @@ import {
   Phone,
   Settings,
   Sun,
+  Timer,
 } from "lucide-react";
 import { isModuleEnabled, type AgentStatus, type ModuleId } from "@calla/shared";
 import { Badge } from "@/components/ui";
@@ -51,6 +52,7 @@ interface NavEntry {
 const NAV_ITEMS: NavEntry[] = [
   { id: "fleet", label: "Fleet", path: "/", Icon: LayoutDashboard },
   { id: "data", label: "Data", path: "/data", Icon: Database },
+  { id: "data", label: "Operations", path: "/operations", Icon: Timer },
   { id: "inbox", label: "Approvals", path: "/inbox", Icon: Inbox },
   { id: "conversations", label: "Conversations", path: "/conversations", Icon: MessagesSquare },
   { id: "reports", label: "Reports", path: "/reports", Icon: BarChart3 },

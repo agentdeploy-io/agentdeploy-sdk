@@ -38,9 +38,36 @@ All state lives in the engine's Durable Object SQLite (local:
 | 7 | **Send (gated)** | `src/agents/outreach.ts` | `POST /cmd/supervisor {"message":"/send <key>"}` → 14-check gate stack (opt-out, rejected, approved, has pitch, has email, MX ok, not paused, `sendEnabled`, daily cap, blacklist, blocked SIC, blocked keyword, headcount) → **Brevo** (real) or dry-run log. |
 
 **Reply loop:** `src/cron/reply-poll.ts` polls Brevo for replies → LLM classifies
-intent → drafts a response → lands in the Approval Inbox (human sends).
+intent → drafts a response → lands in the **Inbox (reply drafts)** → human
+approves → `POST /cmd/supervisor {"message":"/send-reply <id>"}` **sends the
+draft via Brevo** (same 14-check gate stack as `/send`; dry-run logs a
+`dry-run` row). Reject → `/discard-reply <id>`.
 
 **Outreach has NO cron** — sends fire only via supervisor commands, by design (HITL).
+
+### Scheduling model (no static cron)
+
+The worker runs a **self-perpetuating DO alarm** that ticks every 5 minutes
+(`SCHEDULE_TICK_MS`). Each named schedule (`crawl`, `research`, `reply_poll`,
+`housekeeping`) has its cron expression **persisted in the `settings` table**
+(`cron:<name>`), so it is editable at runtime without a redeploy:
+
+- `GET /cmd/schedules` — current expressions, enabled flags, last-run times.
+- `POST /cmd/schedules {"name":"crawl","cron":"0 1 * * *","enabled":true}` —
+  update expression / toggle. `{"name":"crawl"}` — run now.
+  `POST /cmd/schedules/crawl/run` — run now (also used by the UI).
+- On each tick a schedule fires only if its expression was due since its
+  `cron_last_run` (half-open window, catch-up collapses to "due now" after
+  long downtime). First tick after deploy bootstraps all four once.
+- Pause (`POST /cmd/settings {"paused":"true"}`) halts every schedule.
+
+The UI **Operations** page (`/operations`, data module) renders all of this:
+start/stop, per-cron expression editor, run-now, send settings, sent log, and
+the live pipeline funnel.
+
+Note: DO `getAlarm()`/`setAlarm()` are **async** on current compatibility
+dates — they must be awaited before the response returns (see
+`ensureAlarmArmed`, which also re-arms a stale alarm on the next request).
 
 ---
 
@@ -160,8 +187,9 @@ data. Delete with `POST /cmd/supervisor {"message":"/erase <key>"}`.
 |---|-----|--------|
 | G1 | CSV import UI↔engine protocol mismatch | **Fixed** (multipart + raw body) |
 | G2 | Approving a lead does NOT send it — `/send` is a separate supervisor command; UI has no per-row Send button | By design (HITL), but needs a UI action |
-| G3 | **Approved reply drafts are never sent.** `/send-reply <id>` and the UI reply-approve only mark status; no code path sends the draft via Brevo. UI reply-approve patches the LEAD row (`{status:"approved"}`), not the draft (`replies_log.draft_status`) | **Real gap** — reply loop ends at "draft pending" |
+| G3 | **Approved reply drafts are never sent.** `/send-reply <id>` and the UI reply-approve only marked status; no code path sent the draft via Brevo. | **Fixed** — `sendReplyDraft()` in `supervisor.ts` sends via Brevo (full gate stack, dry-run mode, `Re:` subject, signature footer); UI Inbox approve/reject → `/send-reply` / `/discard-reply`. |
 | G4 | `reply-poll` cron uses Brevo `/v3/inbound/events` which returns **metadata only (no email body)** → intent classified blind. The body-carrying path is the Brevo **webhook** → `POST /inbound-webhook` (exists, deduped via `inbound_seen`), but no Brevo-side webhook is configured | **Real gap** — configure Brevo inbound webhook in prod |
-| G5 | No UI controls for: send settings (`/cmd/settings`), crawl/research triggers (`/_cron/*`), sent log (`/sent`). Hooks exist (`useSettings`, `useSchedules`) but no page renders them | UI work |
+| G5 | No UI controls for: send settings, crawl/research triggers, sent log, schedules. | **Fixed** — new **Operations** page (`/operations`, data module): start/stop, per-cron editor, run-now, send settings, sent log, live funnel. |
+| G8 | DO alarm chain was never initialized: `setAlarm` only existed *inside* `alarm()`, so the first tick never fired anywhere (crons ran only via manual `/_cron/*`). Also `getAlarm()`/`setAlarm()` are async on current compat dates — the old sync `getAlarm()===null` check never armed. | **Fixed** — `ensureAlarmArmed()` (awaited) arms on first request + re-arms a stale alarm; `alarm()` self-perpetuates every 5 min. Verified locally: first tick bootstraps all four crons, each then fires only on its own due window. |
 | G6 | Brain `send-external-email` tool is a stub | Deferred |
 | G7 | JEV classifier parked (LLM fallback active); verify step is strict (registry name/reg-number must appear on the website) so generic crawl batches often verify 0 | Intentional design |

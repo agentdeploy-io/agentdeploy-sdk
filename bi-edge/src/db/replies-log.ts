@@ -10,6 +10,7 @@ const UPDATE_DRAFT = `
   UPDATE replies_log SET draft = @draft, draft_status = @draft_status WHERE id = @id
 `;
 
+const SELECT_BY_ID = `SELECT * FROM replies_log WHERE id = ?`;
 const SELECT_BY_LEAD = `SELECT * FROM replies_log WHERE lead_key = ? ORDER BY id DESC`;
 const SELECT_RECENT = `SELECT * FROM replies_log ORDER BY id DESC LIMIT ?`;
 const SELECT_PENDING_DRAFTS = `SELECT * FROM replies_log WHERE draft_status = 'pending' ORDER BY id DESC`;
@@ -40,6 +41,10 @@ export function updateReplyDraft(
 
 export function getRepliesByLead(db: Database.Database, leadKey: string): RepliesLogEntry[] {
   return db.prepare(SELECT_BY_LEAD).all(leadKey) as RepliesLogEntry[];
+}
+
+export function getReplyLogById(db: Database.Database, id: number): RepliesLogEntry | undefined {
+  return db.prepare(SELECT_BY_ID).get(id) as RepliesLogEntry | undefined;
 }
 
 export function listRecentReplies(db: Database.Database, limit: number = 50): RepliesLogEntry[] {

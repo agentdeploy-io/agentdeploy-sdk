@@ -13,6 +13,7 @@ import type { RecoveryAction } from "@/constants/errors";
 export type ViewId =
   | "fleet"
   | "data"
+  | "operations"
   | "inbox"
   | "conversations"
   | "reports"

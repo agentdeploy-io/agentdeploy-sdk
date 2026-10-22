@@ -46,7 +46,7 @@ function escH(s: string | null | undefined): string {
     .replace(/>/g, "&gt;");
 }
 
-function getFirstEmail(lead: Lead): string {
+export function getFirstEmail(lead: Lead): string {
   if (!lead.emails) return "";
   try {
     const parsed = JSON.parse(lead.emails);
@@ -58,6 +58,45 @@ function getFirstEmail(lead: Lead): string {
     return lead.emails;
   }
   return "";
+}
+
+/**
+ * Brand signature footer shared by the initial pitch and approved reply
+ * sends: logo → brand name → "built by <domain>" → site/booking links →
+ * STOP opt-out line. Returns a self-contained (opened + closed) div.
+ */
+export function buildSignatureFooter(
+  env: Record<string, unknown>,
+  leadName: string,
+  country: string,
+): string {
+  const brandName = String(env.BRAND_NAME ?? "");
+  const brandSite = String(env.BRAND_SITE_URL ?? "");
+  const calendly = String(env.CALENDLY_URL ?? "");
+
+  let html = '<div style="margin-top:22px;border-top:1px solid #e5e7eb;padding-top:14px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#4b5563;line-height:1.6">';
+  const logo = String(env.BRAND_LOGO_URL ?? "");
+  if (logo) {
+    html += `<img src="${escH(logo)}" alt="${escH(brandName)}" style="height:32px;display:block;margin-bottom:10px"><br>`;
+  }
+  if (brandName) {
+    html += `<span style="font-size:14px;font-weight:600;color:#111827">${escH(brandName)}</span><br>`;
+  }
+  const brandDomain = brandSite.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  html += brandDomain
+    ? `AI outreach agent built by ${escH(brandDomain)}<br>`
+    : "AI outreach agent<br>";
+  const links: string[] = [];
+  if (brandSite) {
+    links.push(`<a href="${escH(brandSite)}" style="color:#2563eb;text-decoration:none">${escH(brandSite.replace(/^https?:\/\//, ""))}</a>`);
+  }
+  if (calendly) {
+    links.push(`<a href="${escH(calendly)}" style="color:#2563eb;text-decoration:none">book a call</a>`);
+  }
+  if (links.length) html += links.join(' &nbsp;·&nbsp; ') + "<br>";
+  html += `<div style="margin-top:12px;font-size:11.5px;color:#9ca3af">You are receiving this because ${escH(leadName)} matched the business profile we are reaching out to in ${escH(String(country).toUpperCase())}. Reply <b>STOP</b> to opt out.</div>`;
+  html += "</div>";
+  return html;
 }
 
 function hasMxOk(lead: Lead): boolean {
@@ -170,10 +209,6 @@ export function runGateStack(
 
   let html = "";
   if (lead && body) {
-    const brandName = String(env.BRAND_NAME ?? "");
-    const brandSite = String(env.BRAND_SITE_URL ?? "");
-    const calendly = String(env.CALENDLY_URL ?? "");
-
     const paras = body.split(/\n\s*\n/);
     html = '<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#1f2937;line-height:1.65">';
     for (const para of paras) {
@@ -181,28 +216,8 @@ export function runGateStack(
       html += `<p style="margin:0 0 12px">${escH(para).replace(/\n/g, "<br>")}</p>`;
     }
 
-    html += '<div style="margin-top:22px;border-top:1px solid #e5e7eb;padding-top:14px;font-family:Helvetica,Arial,sans-serif;font-size:13px;color:#4b5563;line-height:1.6">';
-    const logo = String(env.BRAND_LOGO_URL ?? "");
-    if (logo) {
-      html += `<img src="${escH(logo)}" alt="${escH(brandName)}" style="height:32px;display:block;margin-bottom:10px"><br>`;
-    }
-    if (brandName) {
-      html += `<span style="font-size:14px;font-weight:600;color:#111827">${escH(brandName)}</span><br>`;
-    }
-    const brandDomain = brandSite.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    html += brandDomain
-      ? `AI outreach agent built by ${escH(brandDomain)}<br>`
-      : "AI outreach agent<br>";
-    const links: string[] = [];
-    if (brandSite) {
-      links.push(`<a href="${escH(brandSite)}" style="color:#2563eb;text-decoration:none">${escH(brandSite.replace(/^https?:\/\//, ""))}</a>`);
-    }
-    if (calendly) {
-      links.push(`<a href="${escH(calendly)}" style="color:#2563eb;text-decoration:none">book a call</a>`);
-    }
-    if (links.length) html += links.join(' &nbsp;·&nbsp; ') + "<br>";
-    html += `<div style="margin-top:12px;font-size:11.5px;color:#9ca3af">You are receiving this because ${escH(lead.name)} matched the business profile we are reaching out to in ${escH(lead.country.toUpperCase())}. Reply <b>STOP</b> to opt out.</div>`;
-    html += "</div></div>";
+    html += buildSignatureFooter(env, lead.name, lead.country);
+    html += "</div>";
   }
 
   return {
@@ -221,7 +236,7 @@ export function runGateStack(
   };
 }
 
-async function sendViaBrevo(
+export async function sendViaBrevo(
   to: string,
   name: string,
   subject: string,

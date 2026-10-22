@@ -19,12 +19,14 @@ import {
   getRepliesByLead,
   listRecentReplies,
   getPendingDrafts,
+  getReplyLogById,
   updateReplyDraft,
   getAllSettings,
   setSetting,
   getSettingsWithDefaults,
   isPaused,
   isSendEnabled,
+  isDryRun,
   getDailyCap,
   countSentToday,
   listCrawlRuns,
@@ -42,7 +44,7 @@ import type {
 import { runQualifier } from "./qualifier.js";
 import { runResearcher } from "./researcher.js";
 import { runWriter } from "./writer.js";
-import { runOutreach, type GateResult } from "./outreach.js";
+import { runOutreach, sendViaBrevo, buildSignatureFooter, getFirstEmail, type GateResult } from "./outreach.js";
 
 type HitlState = {
   pendingApprovals: string[];
@@ -53,7 +55,7 @@ type HitlState = {
 export const COMMANDS = [
   "/leads", "/run", "/verify", "/approve", "/send", "/poll",
   "/settings", "/sent", "/replies", "/erase", "/status",
-  "/pause", "/resume", "/test-send", "/reply-list", "/send-reply",
+  "/pause", "/resume", "/test-send", "/reply-list", "/send-reply", "/discard-reply",
   "/blacklist", "/blacklist-list", "/blacklist-remove", "/add-lead",
   "/blacklist-import", "/blacklist-export", "/pending",
   "/approve-batch", "/export-csv", "/import-csv",
@@ -73,6 +75,75 @@ function initDb(env: Record<string, unknown>): Database.Database {
   db.exec(SCHEMA_V1);
   runMigrations(db);
   return db;
+}
+
+/**
+ * Approve-and-send a pending reply draft (G3): the draft text goes out
+ * through the same Brevo path as initial outreach, carrying the brand
+ * signature footer. Honours dryRun (logs a dry-run entry, no network),
+ * sendEnabled, the daily cap, pause, and lead opt-out state. Marks the
+ * draft `sent` and the lead `replied` on success.
+ */
+async function sendReplyDraft(
+  db: Database.Database,
+  id: number,
+  env: Record<string, unknown>,
+): Promise<string> {
+  const entry = getReplyLogById(db, id);
+  if (!entry) return `Reply log ${id} not found`;
+  if (!entry.draft) return `Reply ${id} has no draft to send`;
+  if (entry.draft_status === "sent") return `Reply ${id} was already sent`;
+  if (entry.draft_status === "discarded") return `Reply ${id} was discarded`;
+
+  const lead = getLead(db, entry.lead_key);
+  if (!lead) return `Lead ${entry.lead_key} no longer exists`;
+  if (lead.status === "opted_out") return `Lead ${lead.key} has opted out — not sending`;
+  if (lead.status === "rejected") return `Lead ${lead.key} was rejected — not sending`;
+
+  const to = entry.reply_from || getFirstEmail(lead);
+  if (!to) return `No recipient address for reply ${id}`;
+
+  if (isPaused(db)) return "Pipeline is paused — run /resume first";
+  const dryRun = isDryRun(db);
+  if (!dryRun && !isSendEnabled(db)) return "sendEnabled is false — set it true in /settings first";
+  if (!dryRun) {
+    const cap = getDailyCap(db);
+    const sentToday = countSentToday(db);
+    if (sentToday >= cap) return `Daily cap reached (${sentToday}/${cap})`;
+  }
+
+  let rawSubject = entry.reply_subject || lead.pitch_subject || "";
+  while (/^\s*(re|fw|fwd)\s*(:|\.\s*)\s*/i.test(rawSubject)) {
+    rawSubject = rawSubject.replace(/^\s*(re|fw|fwd)\s*(:|\.\s*)\s*/i, "");
+  }
+  const subject = `Re: ${rawSubject.replace(/\s+$/, "")}`;
+  const html =
+    `<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;color:#1f2937;line-height:1.65">` +
+    `<p style="margin:0 0 12px">${entry.draft
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\n/g, "<br>")}</p>` +
+    buildSignatureFooter(env, lead.name, lead.country) +
+    "</div>";
+
+  const at = new Date().toISOString();
+  if (dryRun) {
+    logSentEmail(db, { lead_key: lead.key, email: to, subject, message_id: null, status: "dry-run", at });
+    updateReplyDraft(db, id, entry.draft, "sent");
+    updateLead(db, lead.key, { stage: "replied", status: "replied" });
+    return `Reply ${id} DRY-RUN → ${to} (subject: ${subject}) — no email sent`;
+  }
+
+  try {
+    const { messageId } = await sendViaBrevo(to, lead.name, subject, html, env);
+    logSentEmail(db, { lead_key: lead.key, email: to, subject, message_id: messageId, status: "sent", at });
+    updateReplyDraft(db, id, entry.draft, "sent");
+    updateLead(db, lead.key, { stage: "replied", status: "replied" });
+    return `Reply ${id} sent → ${to} (subject: ${subject}, message ${messageId || "queued"})`;
+  } catch (e: any) {
+    return `Reply ${id} failed to send: ${e.message}`;
+  }
 }
 
 export async function handleCommand(
@@ -243,14 +314,25 @@ export async function handleCommand(
       const lines = drafts.map((d) =>
         `[${d.id}] ${d.lead_key} from ${d.reply_from} (${d.intent}) — draft: ${(d.draft ?? "").slice(0, 80)}...`
       );
-      return `**Pending drafts (${drafts.length}):**\n${lines.join("\n")}\nUse /send-reply <id> to approve & send`;
+      return `**Pending drafts (${drafts.length}):**\n${lines.join("\n")}\nUse /send-reply <id> to approve & send, /discard-reply <id> to drop`;
     }
 
     case "/send-reply": {
       const id = Number(args[0]);
       if (!id) return "Usage: /send-reply <reply_log_id>";
-      const success = updateReplyDraft(db, id, "", "approved");
-      return success ? `Reply draft ${id} approved` : `Reply log ${id} not found`;
+      return sendReplyDraft(db, id, env);
+    }
+
+    case "/discard-reply": {
+      const id = Number(args[0]);
+      if (!id) return "Usage: /discard-reply <reply_log_id>";
+      const entry = getReplyLogById(db, id);
+      if (!entry) return `Reply log ${id} not found`;
+      if (entry.draft_status === "sent" || entry.draft_status === "discarded") {
+        return `Reply ${id} is already ${entry.draft_status}`;
+      }
+      const success = updateReplyDraft(db, id, entry.draft ?? "", "discarded");
+      return success ? `Reply draft ${id} discarded` : `Reply log ${id} not found`;
     }
 
     case "/erase": {

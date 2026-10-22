@@ -8,7 +8,11 @@ import { discoverCandidates } from "../../discovery.js";
 import { verify, type PageContent, type RegistryInfo } from "../../verification.js";
 import { extractContacts, validateMxRecords, CONTACT_PATHS } from "../../extraction.js";
 
-const DATA_DIR = process.env["DATA_DIR"] || "/data";
+// Read lazily: this module is imported (hoisted) before server.ts's .env
+// loader runs, so a module-scope read would always see the pre-env default.
+function dataDir(): string {
+  return process.env["DATA_DIR"] || "/data";
+}
 
 interface BudgetTracker {
   vmMinutesLimit: number;
@@ -33,12 +37,12 @@ function checkBudget(budget: BudgetTracker): { exceeded: boolean; reason?: strin
 }
 
 function checkpointFile(runId: string, step: string): string {
-  return path.join(DATA_DIR, `checkpoint-${runId}-${step}.json`);
+  return path.join(dataDir(), `checkpoint-${runId}-${step}.json`);
 }
 
 async function saveCheckpoint(runId: string, step: string, data: unknown): Promise<void> {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.mkdirSync(dataDir(), { recursive: true });
     fs.writeFileSync(checkpointFile(runId, step), JSON.stringify(data), "utf8");
   } catch {
     console.error(`[crawl] checkpoint write failed: ${runId}/${step}`);
@@ -150,7 +154,7 @@ const intakeStep = createStep({
             query,
             apiKey: country === "uk" ? inputData.companiesHouseKey : undefined,
             braveApiKey: inputData.braveApiKey,
-            dataDir: DATA_DIR,
+            dataDir: dataDir(),
             limit: inputData.perCountryLimit,
           });
           countryCandidates.push(...results);
@@ -232,7 +236,13 @@ const verifyStep = createStep({
     const verifiedSeen = new Set<string>();
     const braveKey = process.env["BRAVE_API_KEY"] ?? "";
 
-    for (const candidate of candidates as RegistryCandidate[]) {
+    console.error(`[verify] starting: ${candidates.length} candidates`);
+    const verifyStartedAt = Date.now();
+    for (let i = 0; i < (candidates as RegistryCandidate[]).length; i++) {
+      const candidate = (candidates as RegistryCandidate[])[i];
+      if (i % 10 === 0) {
+        console.error(`[verify] progress ${i}/${candidates.length} elapsed=${((Date.now() - verifyStartedAt) / 1000).toFixed(0)}s`);
+      }
       // Stage B — website discovery: registry APIs (e.g. Companies House) don't
       // return websites, so search Brave for the exact registry name.
       if (!candidate.website && braveKey) {

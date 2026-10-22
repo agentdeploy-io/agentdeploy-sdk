@@ -13,10 +13,8 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["BiEdgeAgent"]
 
-[triggers]
-crons = [
-  "0 1 * * *",
-  "*/30 * * * *",
-  "*/15 * * * *",
-  "0 3 * * *"
-]
+# Scheduling: the BiEdgeAgent DO self-ticks every 5 min via a self-
+# perpetuating alarm and fires whichever stored schedules (settings table:
+# cron:<name>, editable at runtime from the Calla UI) are due. No static
+# Workers cron triggers — that's what makes crons UI-editable without
+# redeploy.

@@ -7,6 +7,7 @@
  *
  *   /                        → FleetDashboard
  *   /data                    → DataSection
+ *   /operations              → OperationsSection
  *   /inbox                   → ApprovalInbox
  *   /conversations           → ConversationsSection
  *   /reports                 → ReportsSection
@@ -34,6 +35,7 @@ import { ApprovalInbox } from "@/pages/ApprovalInbox";
 import { ConversationsSection } from "@/pages/ConversationsSection";
 import { DataSection } from "@/pages/DataSection";
 import { FleetDashboard } from "@/pages/FleetDashboard";
+import { OperationsSection } from "@/pages/OperationsSection";
 import { NotFound } from "@/pages/NotFound";
 import { ReportsSection } from "@/pages/ReportsSection";
 import { SetupSection } from "@/pages/SetupSection";
@@ -49,6 +51,7 @@ const CallsSectionLazy = React.lazy(
 const VIEW_MODULE: Partial<Record<ViewId, ModuleId>> = {
   fleet: "fleet",
   data: "data",
+  operations: "data",
   inbox: "inbox",
   conversations: "conversations",
   reports: "reports",
@@ -71,6 +74,8 @@ function renderScreen(
       return <FleetDashboard onNavigate={navigate} />;
     case "data":
       return <DataSection onNavigate={navigate} />;
+    case "operations":
+      return <OperationsSection onNavigate={navigate} />;
     case "inbox":
       return <ApprovalInbox onNavigate={navigate} />;
     case "conversations":

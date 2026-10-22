@@ -290,8 +290,12 @@ Daily budget enforcement:
 | Crawl fails immediately | Check `BRAVE_API_KEY` is set and has quota |
 | Emails bounce | Check MX validation in lead emails. Blacklist domains that consistently fail. |
 | Daily cap hit too early | Increase `dailyCap` via `/cmd/settings` |
-| jev returns COLD for everything | Check ICP `nace_include` matches your target SIC codes |
-| Writer produces generic pitches | Fill in `BRAND_ONE_LINER` and edit `skills/identity.md` |
+ | jev returns COLD for everything | Check ICP `nace_include` matches your target SIC codes |
+ | Writer produces generic pitches | Fill in `BRAND_ONE_LINER` and edit `skills/identity.md` |
+ | Harvest fails `mkdir /data` | Set `DATA_DIR` to a writable path (dev default `/tmp/bi-core-data`). Read **lazily** at call time — must not be read at module scope (imports are hoisted before `.env` loads). |
+ | Crawl hangs on one candidate | A peer accepted TCP but never responds. All `fetch` calls are wrapped with a timeout (`HTTP_TIMEOUT_MS`, default 30s) via `src/http.ts`. |
+ | Crawl seems stuck (no logs) | Verify logs `[verify] progress N/125` every 10 candidates. Expect ~10s/candidate (Brave discovery) → ~20 min for a full batch. |
+
 
 ### Verification Script
 

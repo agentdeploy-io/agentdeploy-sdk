@@ -35,6 +35,7 @@ import {
   isPaused,
   getSetting,
 } from "./db/index.js";
+import { cronWasDue, isValidCron } from "./services/cron-match.js";
 
 // ── Env ──────────────────────────────────────────────────────────────────────
 
@@ -97,14 +98,7 @@ const agentHandler = createHandler(Supervisor as any);
 
 type CronHandler = (env: Record<string, unknown>, db?: any) => Promise<unknown>;
 
-const CRON_SCHEDULE_MAP: Record<string, CronHandler> = {
-  "0 1 * * *": crawlCron,
-  "*/30 * * * *": researchCron,
-  "*/15 * * * *": replyPollCron,
-  "0 3 * * *": housekeepingCron,
-};
-
-const CRON_NAME_TO_SCHEDULE: Record<string, string> = {
+const CRON_DEFAULTS: Record<string, string> = {
   crawl: "0 1 * * *",
   research: "*/30 * * * *",
   reply_poll: "*/15 * * * *",
@@ -124,6 +118,19 @@ const SCHEDULE_MANIFEST = [
   { cron: "*/15 * * * *", name: "reply_poll", description: "Reply poll every 15 min" },
   { cron: "0 3 * * *", name: "housekeeping", description: "Housekeeping at 03:00 UTC" },
 ];
+
+/**
+ * Scheduler model: a single self-perpetuating DO alarm ticks every
+ * SCHEDULE_TICK_MS. On each tick, every enabled schedule whose stored cron
+ * expression was due since its last run fires exactly once (cronWasDue over
+ * the (lastRun, now] window). Crons are stored in the settings table
+ * (cron:<name>, cron_enabled:<name>, cron_last_run:<name>), so the UI can
+ * edit them at runtime with no restart and no redeploy. The first alarm is
+ * bootstrapped on the first request (alarms are self-perpetuating, so
+ * nothing else ever needs to start them). A schedule with no recorded
+ * lastRun fires once on the first tick (bootstrap), then on its cron.
+ */
+const SCHEDULE_TICK_MS = 5 * 60 * 1000;
 
 // ── BiEdgeAgent Durable Object ──────────────────────────────────────────────
 
@@ -154,6 +161,8 @@ export class BiEdgeAgent {
     const env = this.env as Record<string, unknown>;
     const db = this.getDb();
 
+    await this.ensureAlarmArmed();
+
     if (url.pathname === "/health") {
       return withCors(json({
         status: "ok",
@@ -173,7 +182,10 @@ export class BiEdgeAgent {
           "GET|POST /cmd/data*",
           "GET /cmd/runs",
           "GET /cmd/pipeline",
+          "GET /cmd/replies",
+          "GET /cmd/sent",
           "GET|POST /cmd/schedules",
+          "POST /cmd/schedules/:name/run",
           "GET|POST /cmd/settings",
           "GET|POST /cmd/secrets",
           "GET /cmd/wire",
@@ -192,7 +204,13 @@ export class BiEdgeAgent {
       return withCors(await handleInboundWebhook(request, env, db as any));
     }
 
-    if (url.pathname.startsWith("/cmd/data") || url.pathname === "/cmd/runs" || url.pathname === "/cmd/pipeline") {
+    if (
+      url.pathname.startsWith("/cmd/data") ||
+      url.pathname === "/cmd/runs" ||
+      url.pathname === "/cmd/pipeline" ||
+      url.pathname === "/cmd/replies" ||
+      url.pathname === "/cmd/sent"
+    ) {
       return withCors(await handleDataApi(request, env, db as any));
     }
 
@@ -213,8 +231,15 @@ export class BiEdgeAgent {
       }));
     }
 
-    if (url.pathname === "/cmd/schedules") {
-      return withCors(await this.handleSchedules(request, db, env));
+    if (url.pathname === "/cmd/schedules" || url.pathname.startsWith("/cmd/schedules/")) {
+      if (url.pathname === "/cmd/schedules") {
+        return withCors(await this.handleSchedules(request, db, env));
+      }
+      const m = url.pathname.match(/^\/cmd\/schedules\/([^/]+)\/run$/);
+      if (m && request.method === "POST") {
+        return withCors(await this.runScheduleNow(decodeURIComponent(m[1]), db, env));
+      }
+      return withCors(json({ error: "Not found", path: url.pathname }, 404));
     }
 
     if (url.pathname.startsWith("/_cron/")) {
@@ -245,8 +270,23 @@ export class BiEdgeAgent {
   async alarm(): Promise<void> {
     const db = this.getDb();
     const env = this.env as Record<string, unknown>;
+    const now = Date.now();
 
-    for (const [name, handler] of Object.entries(CRON_NAME_MAP)) {
+    for (const s of SCHEDULE_MANIFEST) {
+      const name = s.name;
+      if (getSetting(db as any, `cron_enabled:${name}`) === "0") continue;
+      const expr = getSetting(db as any, `cron:${name}`) ?? s.cron;
+      const lastRunRaw = getSetting(db as any, `cron_last_run:${name}`);
+      const lastRunMs = lastRunRaw ? Date.parse(lastRunRaw) : 0;
+
+      // No recorded lastRun → bootstrap run once, then on the cron.
+      const due = lastRunMs === 0 || cronWasDue(expr, lastRunMs, now);
+      if (!due) continue;
+
+      // Record before running so a long run (crawl) can't re-trigger itself.
+      setSetting(db as any, `cron_last_run:${name}`, new Date(now).toISOString());
+      const handler = CRON_NAME_MAP[name];
+      if (!handler) continue;
       try {
         await handler(env, db as any);
       } catch (e) {
@@ -258,8 +298,25 @@ export class BiEdgeAgent {
   }
 
   private async rescheduleAlarms(): Promise<void> {
-    const nextAlarm = Date.now() + 15 * 60 * 1000;
+    const nextAlarm = Date.now() + SCHEDULE_TICK_MS;
     await this.state.storage.setAlarm(nextAlarm);
+  }
+
+  /**
+   * Bootstrap the self-perpetuating alarm on a request. getAlarm/setAlarm
+   * are async in current compatibility dates — await both before returning
+   * the response or the commit is not guaranteed. Also re-arms a stale
+   * (past) alarm, so a crashed tick self-heals on the next request.
+   */
+  private async ensureAlarmArmed(): Promise<void> {
+    try {
+      const existing = await this.state.storage.getAlarm();
+      if (existing === null || existing < Date.now()) {
+        await this.state.storage.setAlarm(Date.now() + 60_000);
+      }
+    } catch (e) {
+      console.error("ensureAlarmArmed failed:", e);
+    }
   }
 
   private async handleSettings(request: Request, db: CfSqlDatabase): Promise<Response> {
@@ -311,15 +368,26 @@ export class BiEdgeAgent {
     return json({ error: "Method not allowed" }, 405);
   }
 
+  private scheduleView(db: CfSqlDatabase): Array<Record<string, unknown>> {
+    return SCHEDULE_MANIFEST.map((s) => ({
+      name: s.name,
+      description: s.description,
+      cron: getSetting(db as any, `cron:${s.name}`) ?? s.cron,
+      defaultCron: s.cron,
+      enabled: getSetting(db as any, `cron_enabled:${s.name}`) !== "0",
+      lastRun: getSetting(db as any, `cron_last_run:${s.name}`) ?? null,
+    }));
+  }
+
   private async handleSchedules(request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
     if (request.method === "GET") {
       const paused = isPaused(db as any);
-      return json({ schedules: SCHEDULE_MANIFEST, paused });
+      return json({ schedules: this.scheduleView(db), paused, tickMinutes: SCHEDULE_TICK_MS / 60_000 });
     }
     if (request.method === "POST") {
-      let body: { name?: string };
+      let body: { name?: string; cron?: string; enabled?: boolean };
       try {
-        body = await request.json() as { name?: string };
+        body = await request.json() as { name?: string; cron?: string; enabled?: boolean };
       } catch {
         return json({ error: "Invalid JSON" }, 400);
       }
@@ -330,6 +398,20 @@ export class BiEdgeAgent {
           available: Object.keys(CRON_NAME_MAP),
         }, 400);
       }
+      // Update the stored schedule (no restart, no redeploy).
+      if (typeof body.cron === "string" || typeof body.enabled === "boolean") {
+        if (typeof body.cron === "string") {
+          if (!isValidCron(body.cron)) {
+            return json({ error: `Invalid cron expression: ${body.cron}` }, 400);
+          }
+          setSetting(db as any, `cron:${name}`, body.cron.trim());
+        }
+        if (typeof body.enabled === "boolean") {
+          setSetting(db as any, `cron_enabled:${name}`, body.enabled ? "1" : "0");
+        }
+        return json({ updated: name, schedule: this.scheduleView(db).find((s) => s.name === name) });
+      }
+      // { name } only → run now.
       try {
         const result = await CRON_NAME_MAP[name](env, db as any);
         return json({ triggered: name, result });
@@ -338,6 +420,20 @@ export class BiEdgeAgent {
       }
     }
     return json({ error: "Method not allowed" }, 405);
+  }
+
+  /** POST /cmd/schedules/{name}/run — explicit run-now. */
+  private async runScheduleNow(name: string, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+    const handler = CRON_NAME_MAP[name];
+    if (!handler) {
+      return json({ error: `Unknown cron: ${name}`, available: Object.keys(CRON_NAME_MAP) }, 404);
+    }
+    try {
+      const result = await handler(env, db as any);
+      return json({ triggered: name, result });
+    } catch (e: any) {
+      return json({ error: e.message, cron: name }, 500);
+    }
   }
 
   private async dispatchCron(name: string, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
