@@ -7,10 +7,14 @@ import {
   createCrawlRun,
   updateCrawlRun,
   getSetting,
+  getDefaultVertical,
+  getVertical,
   SCHEMA_V1,
   runMigrations,
+  type Vertical,
 } from "../db/index.js";
 import { parseCountries, SUPPORTED_COUNTRY_CODES } from "../services/countries.js";
+import type { CrawlTrigger } from "../db/types.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -19,21 +23,49 @@ function initDb(): DatabaseType.Database {
   return db;
 }
 
-export async function crawlCron(env: Record<string, unknown>, externalDb?: DatabaseType.Database): Promise<{
+export interface CrawlCronOpts {
+  /** Run this specific vertical. Omitted → the default vertical, if any,
+   *  otherwise the legacy registry harvest from the countries setting. */
+  verticalId?: string;
+  trigger?: CrawlTrigger;
+}
+
+export async function crawlCron(
+  env: Record<string, unknown>,
+  externalDb?: DatabaseType.Database,
+  opts?: CrawlCronOpts,
+): Promise<{
   runId: number | null;
   state: string;
   skipped: boolean;
 }> {
   const ownDb = !externalDb;
   const db = externalDb ?? initDb();
+  const trigger = opts?.trigger ?? "cron";
 
   try {
     if (isPaused(db)) {
       return { runId: null, state: "skipped", skipped: true };
     }
 
-    const countriesRaw = String(getSetting(db, "countries") ?? "uk,ie,fr");
-    const limit = Number(getSetting(db, "crawlLimit") ?? 50);
+    // A vertical pack (UI-editable) drives the run when selected or when it
+    // is the default. Without one we fall back to the legacy harvest.
+    let vertical: Vertical | null = null;
+    if (opts?.verticalId) {
+      vertical = getVertical(db, opts.verticalId);
+    } else {
+      vertical = getDefaultVertical(db);
+    }
+
+    let countriesRaw: string;
+    let limit: number;
+    if (vertical) {
+      countriesRaw = vertical.countries.join(",");
+      limit = vertical.perCountryLimit * Math.max(1, vertical.countries.length);
+    } else {
+      countriesRaw = String(getSetting(db, "countries") ?? "uk,ie,fr");
+      limit = Number(getSetting(db, "crawlLimit") ?? 50);
+    }
     const coreUrl = env.CORE_URL as string;
 
     // Normalise country names to the 2-letter codes the core harvesters key
@@ -43,9 +75,9 @@ export async function crawlCron(env: Record<string, unknown>, externalDb?: Datab
     if (unknown.length > 0 || codes.length === 0) {
       const runId = createCrawlRun(db, {
         started_at: new Date().toISOString(),
-        trigger: "cron",
+        trigger,
         countries: countriesRaw,
-        params: JSON.stringify({ limit }),
+        params: JSON.stringify({ limit, verticalId: vertical?.id }),
         state: "failed",
       });
       const err = unknown.length > 0
@@ -62,9 +94,9 @@ export async function crawlCron(env: Record<string, unknown>, externalDb?: Datab
 
     const runId = createCrawlRun(db, {
       started_at: new Date().toISOString(),
-      trigger: "cron",
+      trigger,
       countries,
-      params: JSON.stringify({ limit }),
+      params: JSON.stringify({ limit, verticalId: vertical?.id }),
       state: "running",
     });
 
@@ -84,7 +116,27 @@ export async function crawlCron(env: Record<string, unknown>, externalDb?: Datab
         body: JSON.stringify({
           countries: codes,
           limit,
-          trigger: "cron",
+          trigger,
+          ...(vertical
+            ? {
+                vertical: {
+                  id: vertical.id,
+                  name: vertical.name,
+                  icp: vertical.icp,
+                  countries: codes,
+                  dorks: vertical.dorks,
+                  cities: vertical.cities,
+                  sicInclude: vertical.sicInclude,
+                  sicExclude: vertical.sicExclude,
+                  requireWebsite: vertical.requireWebsite,
+                  useRegistry: vertical.useRegistry,
+                  llmEnrich: vertical.llmEnrich,
+                  mxGuess: vertical.mxGuess,
+                  minScore: vertical.minScore,
+                  perCountryLimit: vertical.perCountryLimit,
+                },
+              }
+            : {}),
         }),
       });
 

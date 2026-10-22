@@ -80,6 +80,26 @@ card and Operations page poll it every 5s. The `countries` setting accepts
 full names ("Ireland, France" → `ie,fr`); unsupported countries fail the run
 loudly instead of harvesting nothing.
 
+### Verticals (what the crawl hunts)
+
+A **vertical** is the crawl's ICP + countries + discovery dorks + behavior
+toggles, stored in the `verticals` table (schema v3) and editable live from
+the UI (Operations → Verticals):
+
+- `GET /cmd/verticals` — list all packs.
+- `POST /cmd/verticals` — create/update (`{name, icp, countries, dorks,
+  cities?, sicInclude?, sicExclude?, requireWebsite, useRegistry, llmEnrich,
+  mxGuess, minScore, perCountryLimit, isDefault}`; `id` generated when
+  absent). Only one `isDefault` at a time.
+- `DELETE /cmd/verticals?id=<id>` — remove.
+
+`POST /cmd/schedules/crawl/run {"verticalId":"…"}` pins a vertical for a
+manual run; the **cron** always uses the *default* vertical, and with none
+configured it falls back to the legacy registry harvest (`countries`
+setting). The crawl handoff to bi-core carries the whole pack, which runs
+the behavior-driven vertical pipeline there (see the bi-core README for the
+stage/drop-reason detail).
+
 ### Test mode & end-to-end simulation (no mailbox needed)
 
 Three settings let you exercise the whole send→reply→approve loop against

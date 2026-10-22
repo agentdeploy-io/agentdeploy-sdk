@@ -110,6 +110,47 @@ The quoted exact registry name (+ city, with a no-city retry) is specific
 enough; the verify step still checks the site against registry
 name/address.
 
+### Vertical packs (dynamic crawl)
+
+A **vertical pack** is crawl configuration, not code: ICP text, countries,
+discovery dorks, city expansion, SIC include/exclude, behavior toggles
+(`requireWebsite`, `useRegistry`, `llmEnrich`, `mxGuess`) and quality gates
+(`minScore`, `perCountryLimit`). The engine stores verticals
+(`GET|POST|DELETE /cmd/verticals`) and the UI edits them in Operations →
+Verticals. When a handoff carries a `vertical` object, the workflow runs the
+behavior-driven pipeline (`src/pipeline/`) instead of the legacy
+registry harvest:
+
+```
+discover  dorks × cities → search stack → candidates (deduped by domain)
+verify    Companies House name search (UK): dissolved / SIC-excluded → drop
+          website name-match signals (dork sources: miss = flagged, not
+          rejected — the site IS the entity; the LLM gate filters)
+enrich    contact pages + MX validation, info@/hello@ guessing when MX ok
+          LLM (DeepSeek flash via Chutes): ICP relevance 0-100, pitch
+          summary, best email/phone
+score     verified +40 / flagged +25 · relevance×0.3 (≤30) · email +15 ·
+          phone +10 · registry match +10 · SIC-in-include +5 · cap 100
+sync      batches → engine /inbound/sync
+```
+
+Every drop is counted by reason (`registry_sic / no_website / fetch_failed /
+website_unverified / icp_mismatch / below_min_score / budget / duplicate`)
+and reported in the finished task's `result.dropReasons`.
+
+**Search stack** (`src/pipeline/search.ts`): Brave Search API first, with a
+monthly quota tracked on disk (`DATA_DIR/brave-usage.json`, cap
+`BRAVE_QUOTA_CAP`, default **1000**). When Brave is exhausted the run
+continues on the LLM stack — DeepSeek flash (Chutes, `LLM_MODEL`)
+generates candidate businesses from the ICP and judges every raw hit from
+URLScan / DuckDuckGo / Bing against it (free HTML SERPs are bot-gated from
+datacenter IPs, so the LLM keeps discovery alive anywhere). LLM env:
+`LLM_BASE_URL` (default `https://llm.chutes.ai/v1`), `LLM_API_KEY`,
+`LLM_MODEL` (default `deepseek-ai/DeepSeek-V4-Flash-0731-TEE`).
+
+Cron stays a trigger: the scheduled crawl runs the **default** vertical (or
+the legacy harvest when none exists); run-now can pin any vertical.
+
 ### 5. Enable Sends
 
 When you're confident in the output:

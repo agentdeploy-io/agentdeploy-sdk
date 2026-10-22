@@ -1,0 +1,212 @@
+// runVerticalPack — the orchestrator. Executes a vertical pack's pipeline:
+//
+//   discover (dorks via brave → LLM-SERP fallback)
+//   → verify (registry SIC/active gate, website name-match)
+//   → enrich (contacts + MX-gated guessing, LLM ICP fit + summary)
+//   → score (weighted composite, minScore gate)
+//   → sync (batches to the engine)
+//
+// Progress + per-stage drop reasons are reported live so the UI can show
+// exactly where a run is and why a candidate was dropped.
+
+import { syncCallback, type SyncLead } from "../mastra/tools/sync-callback.js";
+import {
+  checkWebsite,
+  discoverDorks,
+  enrichContacts,
+  enrichLlm,
+  verifyRegistry,
+} from "./behaviors.js";
+import { pipelineSearch } from "./search.js";
+import {
+  emptyDrops,
+  emptyStats,
+  type Candidate,
+  type Progress,
+  type Stage,
+  type SyncedLead,
+  type VerticalPack,
+} from "./types.js";
+
+export interface RunCallbacks {
+  progress: (p: Progress) => void;
+  vmMinutesLimit?: number;
+  syncUrl?: string;
+  syncSecret?: string;
+  runId?: string;
+}
+
+const DEFAULTS = {
+  requireWebsite: true,
+  useRegistry: true,
+  llmEnrich: true,
+  mxGuess: true,
+  minScore: 50,
+  perCountryLimit: 20,
+};
+
+export function normalizePack(raw: Partial<VerticalPack> & { id: string; name: string }): VerticalPack {
+  return {
+    id: raw.id,
+    name: raw.name,
+    icp: raw.icp ?? "",
+    countries: raw.countries?.length ? raw.countries : ["uk"],
+    dorks: raw.dorks ?? [],
+    cities: raw.cities,
+    sicInclude: raw.sicInclude,
+    sicExclude: raw.sicExclude,
+    requireWebsite: raw.requireWebsite ?? DEFAULTS.requireWebsite,
+    useRegistry: raw.useRegistry ?? DEFAULTS.useRegistry,
+    llmEnrich: raw.llmEnrich ?? DEFAULTS.llmEnrich,
+    mxGuess: raw.mxGuess ?? DEFAULTS.mxGuess,
+    minScore: raw.minScore ?? DEFAULTS.minScore,
+    perCountryLimit: raw.perCountryLimit ?? DEFAULTS.perCountryLimit,
+  };
+}
+
+function scoreLead(
+  lead: SyncedLead,
+  verdict: "verified" | "flagged",
+  relevance: number,
+  hasLlm: boolean,
+  pack: VerticalPack,
+): number {
+  let score = verdict === "verified" ? 40 : 25;
+  score += hasLlm ? Math.round(relevance * 0.3) : 15;
+  if ((lead.emails ?? []).length > 0) score += 15;
+  if ((lead.phones ?? []).length > 0) score += 10;
+  if (lead.reg_number) score += 10;
+  if (lead.sic && pack.sicInclude?.some((p) => lead.sic!.startsWith(p))) score += 5;
+  return Math.min(100, score);
+}
+
+export async function runVerticalPack(
+  rawPack: Partial<VerticalPack> & { id: string; name: string },
+  env: Record<string, string>,
+  cb: RunCallbacks,
+): Promise<ReturnType<typeof emptyStats>> {
+  const pack = normalizePack(rawPack);
+  const stats = emptyStats();
+  const drops = stats.dropReasons;
+  const startedAt = Date.now();
+  const search = (query: string) => pipelineSearch(query, pack, env);
+
+  for (const country of pack.countries) {
+    const limit = pack.perCountryLimit;
+
+    // ── discover ──
+    cb.progress({ stage: "discover", done: 0, total: 1, detail: `${pack.name} · ${country}: running dorks` });
+    const candidates = await discoverDorks(
+      { pack, country, env, search, limit, drops },
+      stats,
+    );
+    stats.totalCandidates += candidates.length;
+    cb.progress({ stage: "discover", done: 1, total: 1, detail: `${pack.name} · ${country}: ${candidates.length} candidates` });
+    if (candidates.length === 0) {
+      stats.countriesProcessed.push(country);
+      continue;
+    }
+
+    // ── verify ──
+    const websiteChecks = new Map<string, { verdict: "verified" | "flagged"; score: number; signals: string[]; text: string }>();
+    const verified: Candidate[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i]!;
+      if ((Date.now() - startedAt) / 60_000 > (cb.vmMinutesLimit ?? 120)) {
+        drops.budget += candidates.length - i;
+        break;
+      }
+      cb.progress({ stage: "verify", done: i, total: candidates.length, detail: c.name });
+
+      const reg = await verifyRegistry({ pack, country, env, candidate: c });
+      if (!reg.ok) {
+        drops.registry_sic += 1;
+        continue;
+      }
+      Object.assign(c, reg.patch);
+
+      const web = await checkWebsite({ pack, country, env, candidate: c });
+      if ("reason" in web) {
+        drops[web.reason] += 1;
+        continue;
+      }
+      if (web.verdict === "rejected") {
+        drops.website_unverified += 1;
+        continue;
+      }
+      websiteChecks.set(c.key, { verdict: web.verdict, score: web.score, signals: web.signals, text: web.page.text });
+      c.website_status = web.verdict;
+      verified.push(c);
+    }
+    stats.totalVerified += verified.length;
+
+    // ── enrich ──
+    const leads: SyncedLead[] = [];
+    for (let i = 0; i < verified.length; i++) {
+      const c = verified[i]!;
+      if ((Date.now() - startedAt) / 60_000 > (cb.vmMinutesLimit ?? 120)) {
+        drops.budget += verified.length - i;
+        break;
+      }
+      cb.progress({ stage: "enrich", done: i, total: verified.length, detail: c.name });
+      const ctx = { pack, country, env, candidate: c, drops };
+
+      const lead = await enrichContacts(ctx, c);
+      let relevance = 50;
+      let hasLlm = false;
+      let llmReason = "LLM off";
+      let summary = "";
+
+      if (pack.llmEnrich) {
+        const text = websiteChecks.get(c.key)?.text ?? "";
+        const out = await enrichLlm(ctx, c, text);
+        relevance = out.relevant;
+        hasLlm = out.reason !== "LLM unavailable";
+        llmReason = out.reason;
+        summary = out.summary;
+        Object.assign(lead, out.patch);
+        if (hasLlm && relevance < 40) {
+          drops.icp_mismatch += 1;
+          continue;
+        }
+      }
+
+      lead.score = scoreLead(lead, websiteChecks.get(c.key)?.verdict ?? "flagged", relevance, hasLlm, pack);
+      if (lead.score < pack.minScore) {
+        drops.below_min_score += 1;
+        continue;
+      }
+
+      const evidence = [
+        ...(websiteChecks.get(c.key)?.signals ?? []),
+        ...(lead.sic ? [`SIC ${lead.sic}`] : []),
+        `LLM fit ${relevance}/100: ${llmReason}`,
+      ].join("; ");
+      lead.website_evidence = evidence || undefined;
+      lead.research = summary ? `${summary}\n\nFit: ${llmReason} (${relevance}/100)` : undefined;
+      leads.push(lead);
+    }
+
+    // ── sync ──
+    if (leads.length > 0 && cb.syncUrl && cb.syncSecret) {
+      for (let i = 0; i < leads.length; i += 10) {
+        cb.progress({ stage: "sync", done: i, total: leads.length, detail: `syncing batch ${Math.floor(i / 10) + 1}` });
+        const batch = leads.slice(i, i + 10) as SyncLead[];
+        try {
+          const result = await syncCallback(cb.syncUrl, cb.syncSecret, cb.runId ?? "vertical", country, batch);
+          stats.totalSynced += result.pushed;
+          stats.totalFailed += result.failed;
+        } catch (err: any) {
+          stats.totalFailed += batch.length;
+          console.error(`[vertical] sync failed for ${country}:`, err);
+        }
+      }
+      cb.progress({ stage: "sync", done: leads.length, total: leads.length, detail: "synced" });
+    }
+
+    stats.countriesProcessed.push(country);
+  }
+
+  stats.elapsedMs = Date.now() - startedAt;
+  return stats;
+}

@@ -148,7 +148,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   // Runs the crawl workflow; candidates come back async via /inbound/sync on
   // SYNC_URL (authenticated with SYNC_SECRET).
   if (req.method === "POST" && p === "/v1/handoff") {
-    let parsed: { countries?: string[]; limit?: number; trigger?: string } = {};
+    let parsed: { countries?: string[]; limit?: number; trigger?: string; vertical?: Record<string, unknown> } = {};
     const raw = await readBody(req);
     if (raw) {
       try {
@@ -172,9 +172,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       syncSecret: process.env["SYNC_SECRET"] ?? "",
       runId: `edge-${Date.now()}`,
     };
+    // A vertical pack switches the run to the behavior-driven pipeline.
+    if (parsed.vertical && typeof parsed.vertical === "object") {
+      input["vertical"] = parsed.vertical;
+    }
     const task = createWorkflowTask("crawl");
     void runMastraWorkflow(task.id, "crawl", input);
-    return json(res, 202, { taskId: task.id, state: "queued", countries, perCountryLimit });
+    return json(res, 202, {
+      taskId: task.id,
+      state: "queued",
+      countries,
+      perCountryLimit,
+      vertical: parsed.vertical ? (parsed.vertical["name"] ?? parsed.vertical["id"]) : null,
+    });
   }
 
   if (req.method === "POST" && p === "/api/agents/crawler/generate") {

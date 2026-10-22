@@ -7,6 +7,7 @@ import { harvestFR, harvestUK, harvestIE, harvestEE, harvestPT, type RegistryCan
 import { discoverCandidates } from "../../discovery.js";
 import { verify, type PageContent, type RegistryInfo } from "../../verification.js";
 import { extractContacts, validateMxRecords, CONTACT_PATHS } from "../../extraction.js";
+import { runVerticalPack } from "../../pipeline/run.js";
 
 // Read lazily: this module is imported (hoisted) before server.ts's .env
 // loader runs, so a module-scope read would always see the pre-env default.
@@ -83,6 +84,15 @@ function loadCheckpoint<T>(runId: string, step: string): T | null {
   return null;
 }
 
+const verticalPackSchema = z.any();
+
+// Shared by every step's input/output so the chain types line up.
+const verticalFlowFields = {
+  verticalDone: z.boolean().optional().default(false),
+  verticalStats: z.any().nullable().optional(),
+};
+const verticalFlowSchema = z.object(verticalFlowFields);
+
 const crawlInputSchema = z.object({
   countries: z.array(z.string()).default(["fr", "uk", "ie", "ee", "pt"]),
   queries: z.record(z.array(z.string())).optional(),
@@ -94,7 +104,10 @@ const crawlInputSchema = z.object({
   tokensLimit: z.number().optional().default(500000),
   perCountryLimit: z.number().optional().default(20),
   runId: z.string().optional(),
-});
+  // A vertical pack (from the engine) switches the run from the legacy
+  // registry harvest to the behavior-driven vertical pipeline.
+  vertical: verticalPackSchema.optional(),
+}).merge(verticalFlowSchema);
 
 const crawlOutputSchema = z.object({
   runId: z.string(),
@@ -104,10 +117,14 @@ const crawlOutputSchema = z.object({
   totalFailed: z.number(),
   countriesProcessed: z.array(z.string()),
   dropReasons: z.object({
-    noWebsite: z.number(),
-    fetchFailed: z.number(),
-    unverified: z.number(),
-    duplicate: z.number(),
+    noWebsite: z.number().default(0),
+    fetchFailed: z.number().default(0),
+    unverified: z.number().default(0),
+    duplicate: z.number().default(0),
+    registry_sic: z.number().default(0),
+    icp_mismatch: z.number().default(0),
+    below_min_score: z.number().default(0),
+    budget: z.number().default(0),
   }),
   budgetUsed: z.object({
     vmMinutes: z.number(),
@@ -146,6 +163,35 @@ const DEFAULT_QUERIES: Record<string, string[]> = {
   pt: ["agência web", "desenvolvimento de software", "agência digital marketing"],
 };
 
+const verticalStep = createStep({
+  id: "vertical",
+  description: "Run the behavior-driven vertical pipeline (dorking → verify → enrich → sync)",
+  inputSchema: crawlInputSchema,
+  outputSchema: crawlInputSchema,
+  execute: async ({ inputData }) => {
+    if (!inputData.vertical) {
+      return { ...inputData, verticalDone: false, verticalStats: null };
+    }
+    const runId = inputData.runId || `run-${Date.now()}`;
+    const stageToStep: Record<string, CrawlProgress["step"]> = {
+      discover: "intake",
+      verify: "verify",
+      enrich: "extract",
+      sync: "finalize",
+    };
+    setProgress(runId, "intake", 0, 1, `vertical: ${inputData.vertical.name} — starting`);
+    const stats = await runVerticalPack(inputData.vertical, { ...process.env } as Record<string, string>, {
+      runId,
+      vmMinutesLimit: inputData.vmMinutesLimit,
+      syncUrl: inputData.syncUrl,
+      syncSecret: inputData.syncSecret,
+      progress: (p) => setProgress(runId, stageToStep[p.stage] ?? "intake", p.done, p.total, p.detail),
+    });
+    setProgress(runId, "finalize", 1, 1, `vertical: ${inputData.vertical.name} — done (${stats.totalSynced} synced)`);
+    return { ...inputData, verticalDone: true, verticalStats: stats };
+  },
+});
+
 const intakeStep = createStep({
   id: "intake",
   description: "Harvest candidates from country registries in parallel",
@@ -154,8 +200,19 @@ const intakeStep = createStep({
     runId: z.string(),
     candidates: z.array(z.any()),
     stats: z.any(),
+    ...verticalFlowFields,
   }),
   execute: async ({ inputData }) => {
+    if (inputData.verticalDone) {
+      // The vertical pipeline already discovered/verified/enriched/synced.
+      return {
+        runId: inputData.runId || `run-${Date.now()}`,
+        candidates: [],
+        stats: inputData.verticalStats ?? { totalCandidates: 0, totalVerified: 0, totalSynced: 0, totalFailed: 0, countriesProcessed: [], dropReasons: { noWebsite: 0, fetchFailed: 0, unverified: 0, duplicate: 0 } },
+        verticalDone: true,
+        verticalStats: inputData.verticalStats,
+      };
+    }
     const runId = inputData.runId || `run-${Date.now()}`;
     const budget = createBudgetTracker(inputData.vmMinutesLimit, inputData.tokensLimit);
 
@@ -170,7 +227,7 @@ const intakeStep = createStep({
 
     const existing = loadCheckpoint<CrawlState>(runId, "intake");
     if (existing) {
-      return { runId, candidates: existing.candidates, stats: existing.stats };
+      return { runId, candidates: existing.candidates, stats: existing.stats, verticalDone: false, verticalStats: null };
     }
 
     const allCandidates: RegistryCandidate[] = [];
@@ -237,7 +294,7 @@ const intakeStep = createStep({
     const state: CrawlState = { runId, candidates: allCandidates, verifiedLeads: [], stats };
     await saveCheckpoint(runId, "intake", state);
 
-    return { runId, candidates: allCandidates, stats };
+    return { runId, candidates: allCandidates, stats, verticalDone: false, verticalStats: null };
   },
 });
 
@@ -266,15 +323,20 @@ const verifyStep = createStep({
     runId: z.string(),
     candidates: z.array(z.any()),
     stats: z.any(),
+    ...verticalFlowFields,
   }),
   outputSchema: z.object({
     runId: z.string(),
     candidates: z.array(z.any()),
     verifiedLeads: z.array(z.any()),
     stats: z.any(),
+    ...verticalFlowFields,
   }),
   execute: async ({ inputData }) => {
     const { runId, candidates, stats } = inputData;
+    if (inputData.verticalDone) {
+      return { runId, candidates: [], verifiedLeads: [], stats, verticalDone: true, verticalStats: inputData.verticalStats };
+    }
 
     const existing = loadCheckpoint<CrawlState>(runId, "verify");
     if (existing) {
@@ -283,6 +345,8 @@ const verifyStep = createStep({
         candidates: existing.candidates,
         verifiedLeads: existing.verifiedLeads,
         stats: existing.stats,
+        verticalDone: false,
+        verticalStats: null,
       };
     }
 
@@ -377,7 +441,7 @@ const verifyStep = createStep({
     };
     await saveCheckpoint(runId, "verify", state);
 
-    return { runId, candidates, verifiedLeads, stats };
+    return { runId, candidates, verifiedLeads, stats, verticalDone: false, verticalStats: null };
   },
 });
 
@@ -389,18 +453,23 @@ const extractStep = createStep({
     candidates: z.array(z.any()),
     verifiedLeads: z.array(z.any()),
     stats: z.any(),
+    ...verticalFlowFields,
   }),
   outputSchema: z.object({
     runId: z.string(),
     verifiedLeads: z.array(z.any()),
     stats: z.any(),
+    ...verticalFlowFields,
   }),
   execute: async ({ inputData }) => {
     const { runId, verifiedLeads, stats } = inputData;
+    if (inputData.verticalDone) {
+      return { runId, verifiedLeads: [], stats, verticalDone: true, verticalStats: inputData.verticalStats };
+    }
 
     const existing = loadCheckpoint<CrawlState>(runId, "extract");
     if (existing) {
-      return { runId, verifiedLeads: existing.verifiedLeads, stats: existing.stats };
+      return { runId, verifiedLeads: existing.verifiedLeads, stats: existing.stats, verticalDone: false, verticalStats: null };
     }
 
     const leads = verifiedLeads as SyncLead[];
@@ -451,7 +520,7 @@ const extractStep = createStep({
     };
     await saveCheckpoint(runId, "extract", state);
 
-    return { runId, verifiedLeads: leads, stats };
+    return { runId, verifiedLeads: leads, stats, verticalDone: false, verticalStats: null };
   },
 });
 
@@ -462,11 +531,31 @@ const finalizeStep = createStep({
     runId: z.string(),
     verifiedLeads: z.array(z.any()),
     stats: z.any(),
+    ...verticalFlowFields,
   }),
   outputSchema: crawlOutputSchema,
   execute: async ({ inputData }) => {
     const { runId, verifiedLeads, stats } = inputData;
     const leads = verifiedLeads as SyncLead[];
+
+    // Vertical pipeline already synced; report its stats.
+    if (inputData.verticalDone && inputData.verticalStats) {
+      const vs = inputData.verticalStats as any;
+      return {
+        runId,
+        totalCandidates: vs.totalCandidates ?? 0,
+        totalVerified: vs.totalVerified ?? 0,
+        totalSynced: vs.totalSynced ?? 0,
+        totalFailed: vs.totalFailed ?? 0,
+        countriesProcessed: vs.countriesProcessed ?? [],
+        dropReasons: vs.dropReasons ?? { noWebsite: 0, fetchFailed: 0, unverified: 0, duplicate: 0, registry_sic: 0, icp_mismatch: 0, below_min_score: 0, budget: 0 },
+        budgetUsed: {
+          vmMinutes: Number((((vs.elapsedMs ?? 0)) / 60_000).toFixed(2)),
+          tokens: 0,
+        },
+        status: (vs.totalSynced ?? 0) > 0 ? "completed" : "completed-empty",
+      };
+    }
 
     if (leads.length > 0) {
       resetWatermark();
@@ -522,6 +611,7 @@ export const crawlWorkflow = new Workflow({
 });
 
 crawlWorkflow
+  .then(verticalStep)
   .then(intakeStep)
   .then(verifyStep)
   .then(extractStep)

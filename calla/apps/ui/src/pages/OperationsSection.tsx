@@ -448,6 +448,301 @@ function CampaignPanel({
   );
 }
 
+// ─── Verticals (crawl configuration) panel ───────────────────────
+
+// Engine GET/POST /cmd/verticals contract
+interface Vertical {
+  id: string;
+  name: string;
+  icp: string;
+  countries: string[];
+  dorks: string[];
+  cities?: string[];
+  sicInclude?: string[];
+  sicExclude?: string[];
+  requireWebsite: boolean;
+  useRegistry: boolean;
+  llmEnrich: boolean;
+  mxGuess: boolean;
+  minScore: number;
+  perCountryLimit: number;
+  isDefault: boolean;
+}
+
+function VerticalsPanel({
+  deploymentId,
+  onRunVertical,
+}: {
+  deploymentId: string;
+  onRunVertical: (id: string) => Promise<void>;
+}) {
+  const [verticals, setVerticals] = React.useState<Vertical[] | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [selectedId, setSelectedId] = React.useState<string | null>(null); // null = new
+  const [saving, setSaving] = React.useState(false);
+  const [running, setRunning] = React.useState(false);
+  const [form, setForm] = React.useState<Record<string, string>>({});
+
+  const load = React.useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/verticals`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const j = (await res.json()) as { verticals: Vertical[] };
+      const list = j.verticals ?? [];
+      setVerticals(list);
+      if (list.length > 0) {
+        setSelectedId((prev) => (prev && list.some((v) => v.id === prev) ? prev : (list.find((v) => v.isDefault) ?? list[0])?.id ?? null));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load verticals");
+    }
+  }, [deploymentId]);
+
+  React.useEffect(() => {
+    load();
+  }, [load]);
+
+  const select = (v: Vertical | null) => {
+    setSelectedId(v?.id ?? null);
+    setForm(
+      v
+        ? {
+            name: v.name,
+            icp: v.icp,
+            countries: v.countries.join(", "),
+            dorks: v.dorks.join("\n"),
+            cities: (v.cities ?? []).join(", "),
+            sicInclude: (v.sicInclude ?? []).join(", "),
+            sicExclude: (v.sicExclude ?? []).join(", "),
+            minScore: String(v.minScore),
+            perCountryLimit: String(v.perCountryLimit),
+            requireWebsite: String(v.requireWebsite),
+            useRegistry: String(v.useRegistry),
+            llmEnrich: String(v.llmEnrich),
+            mxGuess: String(v.mxGuess),
+            isDefault: String(v.isDefault),
+          }
+        : {
+            name: "",
+            icp: "",
+            countries: "uk",
+            dorks: "",
+            cities: "",
+            sicInclude: "",
+            sicExclude: "",
+            minScore: "50",
+            perCountryLimit: "20",
+            requireWebsite: "true",
+            useRegistry: "true",
+            llmEnrich: "true",
+            mxGuess: "true",
+            isDefault: "false",
+          },
+    );
+  };
+
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const selected = verticals?.find((v) => v.id === selectedId) ?? null;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        ...(selected ? { id: selected.id } : {}),
+        name: (form.name ?? "").trim(),
+        icp: (form.icp ?? "").trim(),
+        countries: (form.countries ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        dorks: (form.dorks ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        cities: (form.cities ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        sicInclude: (form.sicInclude ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        sicExclude: (form.sicExclude ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        minScore: Number(form.minScore ?? 50),
+        perCountryLimit: Number(form.perCountryLimit ?? 20),
+        requireWebsite: form.requireWebsite === "true",
+        useRegistry: form.useRegistry === "true",
+        llmEnrich: form.llmEnrich === "true",
+        mxGuess: form.mxGuess === "true",
+        isDefault: form.isDefault === "true",
+      };
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/verticals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
+      const j = (await res.json()) as { vertical?: Vertical; error?: string };
+      if (!res.ok) throw new Error(j.error ?? `${res.status}`);
+      if (j.vertical) setSelectedId(j.vertical.id);
+      toast.success("Vertical saved", "The next crawl (now or cron) uses this configuration.");
+      await load();
+    } catch (err) {
+      toast.error("Vertical save failed", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!selected) return;
+    if (!window.confirm(`Delete vertical "${selected.name}"?`)) return;
+    setSaving(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/verticals?id=${encodeURIComponent(selected.id)}`, {
+        method: "DELETE",
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      toast.success("Vertical deleted");
+      select(null);
+      await load();
+    } catch (err) {
+      toast.error("Delete failed", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runVertical = async () => {
+    if (!selected) return;
+    setRunning(true);
+    try {
+      await onRunVertical(selected.id);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  if (error) return <ErrorNote message={error} onRetry={load} />;
+  if (verticals === null) return <Skeleton className="h-24 w-full" />;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {verticals.map((v) => (
+          <button
+            key={v.id}
+            onClick={() => select(v)}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[0.75rem] transition-colors ${
+              v.id === selectedId
+                ? "border-ring bg-surface-tag text-foreground"
+                : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {v.name}
+            {v.isDefault && <Badge variant="info" className="px-1 py-0 text-[0.5625rem]">default</Badge>}
+          </button>
+        ))}
+        <Button size="sm" variant="outline" onClick={() => select(null)}>
+          + New vertical
+        </Button>
+      </div>
+
+      {verticals.length === 0 && selectedId === null && (
+        <p className="text-[0.8125rem] text-muted-foreground">
+          No verticals yet. Create one — a vertical is the crawl's ICP, countries and
+          discovery dorks. Until one exists, the cron falls back to the legacy registry harvest.
+        </p>
+      )}
+
+      {(selected || selectedId === null) && (
+        <div className="flex flex-col gap-3 rounded-md border border-border bg-surface-canvas px-3 py-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              Name
+              <input className={fieldCls} value={form.name ?? ""} onChange={(e) => set("name", e.target.value)} placeholder="UK Web Agencies" />
+            </label>
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              Countries (comma-separated)
+              <input className={fieldCls} value={form.countries ?? ""} onChange={(e) => set("countries", e.target.value)} placeholder="uk, ie" />
+              <span className="text-[0.625rem] opacity-70">Supported: uk, ie, fr, ee, pt — full names work too.</span>
+            </label>
+          </div>
+          <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+            ICP (what a perfect lead looks like — drives LLM relevance + summaries)
+            <Textarea
+              className="min-h-16 text-xs"
+              value={form.icp ?? ""}
+              onChange={(e) => set("icp", e.target.value)}
+              placeholder="e.g. Small UK web design / digital marketing agencies (2-20 people) that build websites for local businesses…"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+            Discovery dorks (one per line — search queries that surface the vertical)
+            <Textarea
+              className="min-h-20 font-mono text-xs"
+              value={form.dorks ?? ""}
+              onChange={(e) => set("dorks", e.target.value)}
+              placeholder={'"web design" "our services" site:co.uk\n"digital agency" "contact us" site:co.uk'}
+            />
+          </label>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              Cities (optional — each dork × city)
+              <input className={fieldCls} value={form.cities ?? ""} onChange={(e) => set("cities", e.target.value)} placeholder="London, Manchester" />
+            </label>
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              SIC include (optional — registry filter)
+              <input className={fieldCls} value={form.sicInclude ?? ""} onChange={(e) => set("sicInclude", e.target.value)} placeholder="62010, 73110" />
+            </label>
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              SIC exclude (optional)
+              <input className={fieldCls} value={form.sicExclude ?? ""} onChange={(e) => set("sicExclude", e.target.value)} placeholder="70102" />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+                Min score (0-100)
+                <input className={fieldCls} value={form.minScore ?? ""} onChange={(e) => set("minScore", e.target.value)} inputMode="numeric" />
+              </label>
+              <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+                Leads per country
+                <input className={fieldCls} value={form.perCountryLimit ?? ""} onChange={(e) => set("perCountryLimit", e.target.value)} inputMode="numeric" />
+              </label>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[0.75rem] text-muted-foreground">
+            {(["requireWebsite", "useRegistry", "llmEnrich", "mxGuess"] as const).map((k) => (
+              <label key={k} className="flex items-center gap-1.5">
+                <input type="checkbox" checked={form[k] === "true"} onChange={(e) => set(k, String(e.target.checked))} />
+                {k === "requireWebsite" && "require website"}
+                {k === "useRegistry" && "verify via Companies House (UK)"}
+                {k === "llmEnrich" && "LLM enrichment (ICP fit + summary)"}
+                {k === "mxGuess" && "guess info@/hello@ when MX ok"}
+              </label>
+            ))}
+            <label className="flex items-center gap-1.5">
+              <input type="checkbox" checked={form.isDefault === "true"} onChange={(e) => set("isDefault", String(e.target.checked))} />
+              default for cron
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={save} disabled={saving || !(form.name ?? "").trim() || !(form.countries ?? "").trim()}>
+                {saving ? "Saving…" : selected ? "Save vertical" : "Create vertical"}
+              </Button>
+              {selected && (
+                <>
+                  <Button size="sm" variant="outline" onClick={runVertical} disabled={running}>
+                    <Zap /> {running ? "Running…" : "Run now"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={remove} disabled={saving}>
+                    Delete
+                  </Button>
+                </>
+              )}
+            </div>
+            <p className="text-[0.6875rem] text-muted-foreground">
+              Cron crawl uses the <b>default</b> vertical; "Run crawl now" above also uses it.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Thinking (LLM traces) panel ─────────────────────────────────
 
 function ThinkingPanel({ deploymentId }: { deploymentId: string }) {
@@ -808,19 +1103,25 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
     }
   };
 
-  const runNow = async (name: string) => {
+  const runNow = async (name: string, body?: Record<string, unknown>) => {
     if (!deploymentId) return;
     try {
       const res = await authFetch(`${proxyBase(deploymentId)}/cmd/schedules/${encodeURIComponent(name)}/run`, {
         method: "POST",
+        ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(180_000),
       });
-      const json = (await res.json()) as { error?: string; result?: Record<string, unknown> };
+      const json = (await res.json()) as { error?: string; result?: Record<string, unknown>; verticalId?: string | null };
       if (!res.ok) throw new Error(json.error ?? `${res.status}`);
       const state = json.result?.state as string | undefined;
+      const verticalId = json.verticalId ?? undefined;
       toast.success(
         `${name} run triggered`,
-        state ? `State: ${state}` : "Run started.",
+        state
+          ? verticalId
+            ? `State: ${state} (vertical ${verticalId})`
+            : `State: ${state}`
+          : "Run started.",
       );
       setTimeout(() => {
         loadAll();
@@ -942,6 +1243,15 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
             </p>
           )}
         </div>
+      </Panel>
+
+      {/* ── Verticals (what the crawl looks for) ──────────── */}
+      <Panel
+        title="Verticals"
+        icon={<BrainCircuit className="size-4" />}
+        subtitle="What the crawl hunts — ICP, countries and discovery dorks per vertical. A vertical is config, not code: add one and the next crawl runs it."
+      >
+        <VerticalsPanel deploymentId={deploymentId} onRunVertical={(id) => runNow("crawl", { verticalId: id })} />
       </Panel>
 
       {/* ── Schedules ──────────────────────────────────────── */}

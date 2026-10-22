@@ -38,6 +38,11 @@ import {
   getLead,
   isTestMode,
   getTestRecipient,
+  listVerticals,
+  getVertical,
+  upsertVertical,
+  deleteVertical,
+  type Vertical,
 } from "./db/index.js";
 import { getFirstEmail, sendViaBrevo } from "./agents/outreach.js";
 import { cronWasDue, isValidCron } from "./services/cron-match.js";
@@ -200,6 +205,7 @@ export class BiEdgeAgent {
           "GET /cmd/runs",
           "GET /cmd/pipeline",
           "GET /cmd/crawl-status",
+          "GET|POST|DELETE /cmd/verticals",
           "GET /cmd/replies",
           "GET /cmd/sent",
           "GET|POST /cmd/schedules",
@@ -239,6 +245,10 @@ export class BiEdgeAgent {
       return withCors(await this.handleCrawlStatus(env));
     }
 
+    if (url.pathname === "/cmd/verticals" || url.pathname.startsWith("/cmd/verticals/")) {
+      return withCors(await this.handleVerticals(request, db));
+    }
+
     if (url.pathname === "/cmd/settings") {
       return withCors(await this.handleSettings(request, db));
     }
@@ -275,7 +285,7 @@ export class BiEdgeAgent {
       }
       const m = url.pathname.match(/^\/cmd\/schedules\/([^/]+)\/run$/);
       if (m && request.method === "POST") {
-        return withCors(await this.runScheduleNow(decodeURIComponent(m[1]), db, env));
+        return withCors(await this.runScheduleNow(decodeURIComponent(m[1]), request, db, env));
       }
       return withCors(json({ error: "Not found", path: url.pathname }, 404));
     }
@@ -564,6 +574,64 @@ export class BiEdgeAgent {
     }
   }
 
+  /**
+   * GET /cmd/verticals — list all vertical packs.
+   * POST /cmd/verticals — create or update one (body = the pack; id generated
+   *   when absent).
+   * DELETE /cmd/verticals?id=<id> — remove one.
+   */
+  private async handleVerticals(request: Request, db: CfSqlDatabase): Promise<Response> {
+    if (request.method === "GET") {
+      return json({ verticals: listVerticals(db as any) });
+    }
+
+    if (request.method === "POST") {
+      let body: Partial<Vertical>;
+      try {
+        body = await request.json() as Partial<Vertical>;
+      } catch {
+        return json({ error: "Invalid JSON" }, 400);
+      }
+      if (!body.name || typeof body.name !== "string") {
+        return json({ error: "name is required" }, 400);
+      }
+      const id =
+        body.id && typeof body.id === "string"
+          ? body.id
+          : `v-${Date.now().toString(36)}`;
+      const vertical: Vertical = {
+        id,
+        name: body.name,
+        icp: body.icp ?? "",
+        countries: Array.isArray(body.countries) ? body.countries.map(String) : [],
+        dorks: Array.isArray(body.dorks) ? body.dorks.map(String) : [],
+        cities: Array.isArray(body.cities) ? body.cities.map(String) : undefined,
+        sicInclude: Array.isArray(body.sicInclude) ? body.sicInclude.map(String) : undefined,
+        sicExclude: Array.isArray(body.sicExclude) ? body.sicExclude.map(String) : undefined,
+        requireWebsite: body.requireWebsite ?? true,
+        useRegistry: body.useRegistry ?? true,
+        llmEnrich: body.llmEnrich ?? true,
+        mxGuess: body.mxGuess ?? true,
+        minScore: typeof body.minScore === "number" ? body.minScore : 50,
+        perCountryLimit: typeof body.perCountryLimit === "number" ? body.perCountryLimit : 20,
+        isDefault: body.isDefault ?? false,
+      };
+      if (vertical.countries.length === 0) {
+        return json({ error: "at least one country is required" }, 400);
+      }
+      return json({ vertical: upsertVertical(db as any, vertical) });
+    }
+
+    if (request.method === "DELETE") {
+      const id = new URL(request.url).searchParams.get("id");
+      if (!id) return json({ error: "id is required" }, 400);
+      const removed = deleteVertical(db as any, id);
+      return removed ? json({ deleted: id }) : json({ error: "not found" }, 404);
+    }
+
+    return json({ error: "Method not allowed" }, 405);
+  }
+
   private scheduleView(db: CfSqlDatabase): Array<Record<string, unknown>> {
     return SCHEDULE_MANIFEST.map((s) => ({
       name: s.name,
@@ -619,14 +687,27 @@ export class BiEdgeAgent {
   }
 
   /** POST /cmd/schedules/{name}/run — explicit run-now. */
-  private async runScheduleNow(name: string, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+  private async runScheduleNow(name: string, request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
     const handler = CRON_NAME_MAP[name];
     if (!handler) {
       return json({ error: `Unknown cron: ${name}`, available: Object.keys(CRON_NAME_MAP) }, 404);
     }
+    // Crawl run-now may pin a specific vertical: {verticalId}.
+    let verticalId: string | undefined;
+    if (name === "crawl") {
+      try {
+        const body = (await request.json()) as { verticalId?: string };
+        if (body?.verticalId) verticalId = String(body.verticalId);
+      } catch {
+        /* no body — use default/legacy */
+      }
+    }
     try {
-      const result = await handler(env, db as any);
-      return json({ triggered: name, result });
+      const result =
+        name === "crawl"
+          ? await (handler as typeof crawlCron)(env, db as any, { verticalId, trigger: "manual" })
+          : await handler(env, db as any);
+      return json({ triggered: name, verticalId: verticalId ?? null, result });
     } catch (e: any) {
       return json({ error: e.message, cron: name }, 500);
     }

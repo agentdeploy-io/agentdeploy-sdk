@@ -163,7 +163,7 @@ export async function braveSearch(
 /**
  * Determine whether a hostname should be excluded from candidates.
  */
-function isExcludedDomain(host: string): boolean {
+export function isExcludedDomain(host: string): boolean {
   const clean = host.replace(/^www\./, "");
   if (DIRECTORY_DOMAINS.some((d) => clean.includes(d))) return true;
   if (HOSTED_PLATFORM_DOMAINS.some((d) => clean.includes(d))) return true;
@@ -174,7 +174,7 @@ function isExcludedDomain(host: string): boolean {
  * Check if the registrable part of a domain is a single generic token
  * (e.g. "digital.com") which cannot be reliably verified by token overlap.
  */
-function isGenericSingleToken(host: string): boolean {
+export function isGenericSingleToken(host: string): boolean {
   const clean = host.replace(/^www\./, "");
   const parts = clean.split(".");
   if (parts.length < 2) return true;
