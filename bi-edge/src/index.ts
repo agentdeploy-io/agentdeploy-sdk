@@ -199,6 +199,7 @@ export class BiEdgeAgent {
           "GET|POST /cmd/data*",
           "GET /cmd/runs",
           "GET /cmd/pipeline",
+          "GET /cmd/crawl-status",
           "GET /cmd/replies",
           "GET /cmd/sent",
           "GET|POST /cmd/schedules",
@@ -232,6 +233,10 @@ export class BiEdgeAgent {
       url.pathname === "/cmd/sent"
     ) {
       return withCors(await handleDataApi(request, env, db as any));
+    }
+
+    if (url.pathname === "/cmd/crawl-status") {
+      return withCors(await this.handleCrawlStatus(env));
     }
 
     if (url.pathname === "/cmd/settings") {
@@ -540,6 +545,23 @@ export class BiEdgeAgent {
       }, 400);
     }
     return json({ error: "Method not allowed" }, 405);
+  }
+
+  private async handleCrawlStatus(env: Record<string, unknown>): Promise<Response> {
+    const coreUrl = String(env.CORE_URL ?? "").replace(/\/$/, "");
+    if (!coreUrl) {
+      return json({ available: false, error: "CORE_URL not configured" });
+    }
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 3000);
+      const res = await fetch(`${coreUrl}/status`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) return json({ available: false, error: `core ${res.status}` });
+      return json({ available: true, ...(await res.json()) as object });
+    } catch (e: any) {
+      return json({ available: false, error: e.message ?? "unreachable" });
+    }
   }
 
   private scheduleView(db: CfSqlDatabase): Array<Record<string, unknown>> {

@@ -1,6 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { mastra } from "./mastra/index.js";
+import { getCrawlProgress } from "./mastra/workflows/crawl.js";
 import { installFetchTimeout } from "./http.js";
 import type { CoreMessage } from "ai";
 
@@ -121,16 +122,24 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === "GET" && p === "/status") {
+    const active = [...tasks.values()].some((t) => t.state === "queued" || t.state === "running");
     return json(res, 200, {
-      phase: tasks.size > 0 ? "busy" : "idle",
+      phase: active ? "busy" : "idle",
+      progress: getCrawlProgress(),
       memMb: process.memoryUsage().rss / (1024 * 1024),
-      tasks: [...tasks.values()].map((t) => ({
-        id: t.id,
-        state: t.state,
-        startedAt: t.startedAt,
-        finishedAt: t.finishedAt,
-        error: t.error,
-      })),
+      tasks: [...tasks.values()]
+        .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
+        .slice(0, 8)
+        .map((t) => ({
+          id: t.id,
+          state: t.state,
+          startedAt: t.startedAt,
+          finishedAt: t.finishedAt,
+          error: t.error,
+          // Final stats (totalCandidates / totalVerified / totalSynced / status)
+          // so the UI can show what a finished crawl actually produced.
+          result: t.state === "succeeded" ? (t.result as { result?: unknown } | undefined)?.result : undefined,
+        })),
     });
   }
 

@@ -256,6 +256,21 @@ const LiveEventsPanel: React.FC = () => {
  * and points at the Operations screen — the discoverability fix for "where
  * is the cron?".
  */
+interface CrawlStatus {
+  available: boolean;
+  error?: string;
+  phase?: "idle" | "busy";
+  progress?: { step: string; done: number; total: number; detail: string; updatedAt: string } | null;
+  tasks?: Array<{
+    id: string;
+    state: string;
+    startedAt: string;
+    finishedAt?: string;
+    error?: string;
+    result?: { totalCandidates?: number; totalVerified?: number; totalSynced?: number; status?: string };
+  }>;
+}
+
 const PipelineCard: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavigate }) => {
   const { deploymentId } = useDeploymentSelector();
   const [info, setInfo] = React.useState<{
@@ -265,20 +280,23 @@ const PipelineCard: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavi
     nextCron: string | null;
     funnel: Array<{ stage: string; count: number }>;
   } | null>(null);
+  const [crawl, setCrawl] = React.useState<CrawlStatus | null>(null);
 
   const load = React.useCallback(async () => {
     if (!deploymentId) return;
     try {
-      const [s, p] = await Promise.all([
+      const [s, p, cs] = await Promise.all([
         authFetch(`/d/${deploymentId}/cmd/schedules`, { signal: AbortSignal.timeout(8000) }),
         authFetch(`/d/${deploymentId}/cmd/pipeline`, { signal: AbortSignal.timeout(8000) }),
+        authFetch(`/d/${deploymentId}/cmd/crawl-status`, { signal: AbortSignal.timeout(8000) }),
       ]);
+      if (cs.ok) setCrawl((await cs.json()) as CrawlStatus);
       if (!s.ok) return;
       const sj = (await s.json()) as {
         schedules?: Array<{ name: string; cron: string; enabled: boolean; lastRun: string | null }>;
         paused?: boolean;
       };
-      const crawl = sj.schedules?.find((x) => x.name === "crawl");
+      const crawlSched = sj.schedules?.find((x) => x.name === "crawl");
       let lastRunAt: string | null = null;
       let lastState: string | null = null;
       if (p.ok) {
@@ -290,22 +308,29 @@ const PipelineCard: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavi
           paused: !!sj.paused,
           lastRunAt: pj.lastCrawl?.started_at ?? pj.lastCrawl?.startedAt ?? null,
           lastState: pj.lastCrawl?.state ?? null,
-          nextCron: crawl?.enabled ? crawl.cron : null,
+          nextCron: crawlSched?.enabled ? crawlSched.cron : null,
           funnel: pj.funnel ?? prev?.funnel ?? [],
         }));
       } else {
-        setInfo({ paused: !!sj.paused, lastRunAt, lastState, nextCron: crawl?.enabled ? crawl.cron : null, funnel: [] });
+        setInfo({ paused: !!sj.paused, lastRunAt, lastState, nextCron: crawlSched?.enabled ? crawlSched.cron : null, funnel: [] });
       }
     } catch {
       /* engine down — card stays hidden */
     }
   }, [deploymentId]);
 
+  // Live state: poll every 5s so running crawls, results and errors show up
+  // without a manual refresh.
   React.useEffect(() => {
     load();
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
   }, [load]);
 
   if (!deploymentId || !info) return null;
+
+  const crawling = crawl?.available === true && crawl.phase === "busy";
+  const lastTask = crawl?.tasks?.[0] ?? null;
 
   return (
     <Card className="flex flex-col gap-3 p-4">
@@ -313,14 +338,38 @@ const PipelineCard: React.FC<{ onNavigate: (path: string) => void }> = ({ onNavi
         <div className="flex items-center gap-2">
           <Timer className="size-4 text-muted-foreground" />
           <span className="text-sm font-semibold text-foreground">Lead-gen pipeline</span>
-          <Badge variant={info.paused ? "warning" : "success"}>
-            {info.paused ? "Paused" : "Running"}
+          <Badge variant={crawling ? "info" : info.paused ? "warning" : "success"}>
+            {crawling ? "Crawling…" : info.paused ? "Paused" : "Running"}
           </Badge>
         </div>
         <Button size="sm" variant="outline" onClick={() => onNavigate("/operations")}>
           Open Operations →
         </Button>
       </div>
+      {crawling && crawl.progress && (
+        <div className="rounded-md border border-info/40 bg-info/10 px-3 py-2 text-[0.8125rem] text-foreground">
+          <b>{crawl.progress.step}</b>{" "}
+          <span className="tabular-nums">
+            {crawl.progress.done}/{crawl.progress.total}
+          </span>{" "}
+          <span className="text-muted-foreground">· {crawl.progress.detail}</span>
+        </div>
+      )}
+      {!crawling && lastTask?.state === "failed" && lastTask.error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[0.8125rem] text-destructive">
+          Last crawl failed: {lastTask.error}
+        </div>
+      )}
+      {!crawling && lastTask?.state === "succeeded" && lastTask.result && (
+        <div className="text-[0.75rem] text-muted-foreground">
+          Last crawl{" "}
+          <b className="text-foreground">{relativeTime(lastTask.startedAt)}</b>
+          {": "}
+          {(lastTask.result.totalSynced ?? 0) > 0
+            ? `${lastTask.result.totalSynced} leads synced from ${lastTask.result.totalCandidates} candidates`
+            : `0 leads (harvested ${lastTask.result.totalCandidates ?? 0} candidates)`}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.75rem] text-muted-foreground">
         <span>
           Crawl schedule{" "}

@@ -10,6 +10,7 @@ import {
   SCHEMA_V1,
   runMigrations,
 } from "../db/index.js";
+import { parseCountries, SUPPORTED_COUNTRY_CODES } from "../services/countries.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -31,9 +32,33 @@ export async function crawlCron(env: Record<string, unknown>, externalDb?: Datab
       return { runId: null, state: "skipped", skipped: true };
     }
 
-    const countries = String(getSetting(db, "countries") ?? "uk,ie,fr");
+    const countriesRaw = String(getSetting(db, "countries") ?? "uk,ie,fr");
     const limit = Number(getSetting(db, "crawlLimit") ?? 50);
     const coreUrl = env.CORE_URL as string;
+
+    // Normalise country names to the 2-letter codes the core harvesters key
+    // on ("Ireland" -> "ie"). Fail LOUDLY on unknown countries instead of
+    // silently harvesting nothing — that was the "where's my data?" bug.
+    const { codes, unknown } = parseCountries(countriesRaw);
+    if (unknown.length > 0 || codes.length === 0) {
+      const runId = createCrawlRun(db, {
+        started_at: new Date().toISOString(),
+        trigger: "cron",
+        countries: countriesRaw,
+        params: JSON.stringify({ limit }),
+        state: "failed",
+      });
+      const err = unknown.length > 0
+        ? `Unsupported countries: ${unknown.join(", ")} — supported: ${SUPPORTED_COUNTRY_CODES.join(", ")}`
+        : "No countries configured (set e.g. \"uk,ie,fr\")";
+      updateCrawlRun(db, runId, {
+        finished_at: new Date().toISOString(),
+        state: "failed",
+        stats: JSON.stringify({ error: err }),
+      });
+      return { runId, state: "failed", skipped: false };
+    }
+    const countries = codes.join(",");
 
     const runId = createCrawlRun(db, {
       started_at: new Date().toISOString(),
@@ -57,7 +82,7 @@ export async function crawlCron(env: Record<string, unknown>, externalDb?: Datab
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          countries: countries.split(",").map((c) => c.trim()),
+          countries: codes,
           limit,
           trigger: "cron",
         }),

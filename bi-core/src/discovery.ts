@@ -97,75 +97,67 @@ function sleep(ms: number): Promise<void> {
  * @param opts - Brave API key and optional country hint.
  * @param count - Number of results to return (default 5).
  */
+// Brave Free plan = 1 req/s. Pace all calls through this gate so a crawl
+// never hammers the quota into a wall of 429s.
+let lastBraveCallAt = 0;
+const BRAVE_MIN_INTERVAL_MS = 1100;
+
+async function paceBrave(): Promise<void> {
+  const wait = lastBraveCallAt + BRAVE_MIN_INTERVAL_MS - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastBraveCallAt = Date.now();
+}
+
 export async function braveSearch(
   query: string,
   opts: BraveOpts,
   count = 5
 ): Promise<BraveSearchResult[]> {
-  const variants: (string | null)[] = opts.country
-    ? [
-        opts.country.toUpperCase(),
-        COUNTRY_NAMES[opts.country.toLowerCase()] ?? null,
-      ].filter(Boolean)
-    : [];
-  variants.push(null);
+  // NOTE: no `country` param. Our key rejects ISO codes with 422 (seen with
+  // UK, IE) and Brave only accepts ISO codes anyway, so the old
+  // code→name→none fallback burned 2 guaranteed-failing requests per
+  // candidate and then hit the rate limit. The quoted exact registry name
+  // (+ city) is specific enough; the verify step still checks the site
+  // against registry name/address.
+  const params = new URLSearchParams({ q: query, count: String(count) });
 
-  let lastError = "no attempts";
+  const doFetch = async () =>
+    fetch(`${BRAVE_ENDPOINT}?${params}`, {
+      headers: {
+        Accept: "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": opts.apiKey,
+      },
+    });
 
-  for (const country of variants) {
-    const params = new URLSearchParams({ q: query, count: String(count) });
-    if (country) params.set("country", country);
+  await paceBrave();
+  const res = await doFetch();
 
-    try {
-      const res = await fetch(`${BRAVE_ENDPOINT}?${params}`, {
-        headers: {
-          Accept: "application/json",
-          "Accept-Encoding": "gzip",
-          "X-Subscription-Token": opts.apiKey,
-        },
-      });
-
-      if (res.status === 422) {
-        lastError = `Brave 422 (country=${country ?? "none"})`;
-        continue;
-      }
-
-      if (res.status === 429) {
-        await sleep(3000);
-        const retry = await fetch(`${BRAVE_ENDPOINT}?${params}`, {
-          headers: {
-            Accept: "application/json",
-            "X-Subscription-Token": opts.apiKey,
-          },
-        });
-        if (!retry.ok) throw new Error(`Brave search ${retry.status}`);
-        const data = (await retry.json()) as {
-          web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
-        };
-        return (data.web?.results ?? []).slice(0, count).map((r) => ({
-          title: r.title ?? "",
-          url: r.url ?? "",
-          description: r.description ?? "",
-        }));
-      }
-
-      if (!res.ok) throw new Error(`Brave search ${res.status}`);
-
-      const data = (await res.json()) as {
-        web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
-      };
-      return (data.web?.results ?? []).slice(0, count).map((r) => ({
-        title: r.title ?? "",
-        url: r.url ?? "",
-        description: r.description ?? "",
-      }));
-    } catch (e) {
-      lastError = (e as Error).message;
-      await sleep(1500);
-    }
+  if (res.status === 429) {
+    await sleep(3000);
+    await paceBrave();
+    const retry = await doFetch();
+    if (!retry.ok) throw new Error(`Brave search ${retry.status}`);
+    const data = (await retry.json()) as {
+      web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
+    };
+    return (data.web?.results ?? []).slice(0, count).map((r) => ({
+      title: r.title ?? "",
+      url: r.url ?? "",
+      description: r.description ?? "",
+    }));
   }
 
-  throw new Error(lastError);
+  if (!res.ok) throw new Error(`Brave search ${res.status}`);
+
+  const data = (await res.json()) as {
+    web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
+  };
+  return (data.web?.results ?? []).slice(0, count).map((r) => ({
+    title: r.title ?? "",
+    url: r.url ?? "",
+    description: r.description ?? "",
+  }));
 }
 
 /**
@@ -212,7 +204,13 @@ export async function discoverCandidates(
     ? `"${registryName}" ${city}`
     : `"${registryName}"`;
 
-  const results = await braveSearch(query, opts, count);
+  let results = await braveSearch(query, opts, count);
+  // The registry city is often an old or sub-town address; when the
+  // name+city query over-constrains to zero hits, retry with the exact
+  // name alone.
+  if (results.length === 0 && city) {
+    results = await braveSearch(`"${registryName}"`, opts, count);
+  }
   const candidates: CandidateResult[] = [];
   const seen = new Set<string>();
 

@@ -81,6 +81,35 @@ curl -X POST https://<your-edge>/cmd/schedules \
 
 In dry-run mode, the gate stack runs all checks but does not actually send emails. Check `/cmd/data?stage=sent` to see what *would* have been sent.
 
+### Watching a crawl (live status)
+
+A crawl takes minutes (Brave is paced to ≈1.1s/candidate). While one runs,
+`GET /status` on bi-core reports the live step and position, and the engine
+proxies it at `GET /cmd/crawl-status` (the UI Fleet/Operations pages poll
+every 5s):
+
+```jsonc
+{
+  "phase": "busy",
+  "progress": { "step": "verify", "done": 14, "total": 15, "detail": "DALIMER MEDIA LIMITED" },
+  "tasks": [{ "id": "crawl-3", "state": "running", "result": null }]
+}
+```
+
+A finished task's `result` includes `totalCandidates / totalVerified /
+totalSynced` plus **`dropReasons`** (`noWebsite / fetchFailed / unverified /
+duplicate`) — so a "0 leads" crawl tells you *why* instead of staying a
+mystery. Unknown countries fail the task loudly (`Unknown countries: …`);
+the engine also validates names up front and accepts full names
+("Ireland" → `ie`).
+
+Note on Brave: the `country` param is intentionally **not** sent — our key
+rejects ISO codes with 422, and the old code→name→none fallback burned two
+guaranteed-failing requests per candidate before hitting the rate limit.
+The quoted exact registry name (+ city, with a no-city retry) is specific
+enough; the verify step still checks the site against registry
+name/address.
+
 ### 5. Enable Sends
 
 When you're confident in the output:

@@ -14,6 +14,28 @@ function dataDir(): string {
   return process.env["DATA_DIR"] || "/data";
 }
 
+// Live progress for the in-flight crawl, exposed via GET /status so the UI
+// can show what the crawler is doing right now (harvest → verify → extract
+// → sync) instead of a flat "idle".
+export interface CrawlProgress {
+  runId: string;
+  step: "intake" | "verify" | "extract" | "finalize";
+  done: number;
+  total: number;
+  detail: string;
+  updatedAt: string;
+}
+
+let currentProgress: CrawlProgress | null = null;
+
+export function getCrawlProgress(): CrawlProgress | null {
+  return currentProgress;
+}
+
+function setProgress(runId: string, step: CrawlProgress["step"], done: number, total: number, detail: string): void {
+  currentProgress = { runId, step, done, total, detail, updatedAt: new Date().toISOString() };
+}
+
 interface BudgetTracker {
   vmMinutesLimit: number;
   tokensLimit: number;
@@ -81,6 +103,12 @@ const crawlOutputSchema = z.object({
   totalSynced: z.number(),
   totalFailed: z.number(),
   countriesProcessed: z.array(z.string()),
+  dropReasons: z.object({
+    noWebsite: z.number(),
+    fetchFailed: z.number(),
+    unverified: z.number(),
+    duplicate: z.number(),
+  }),
   budgetUsed: z.object({
     vmMinutes: z.number(),
     tokens: z.number(),
@@ -98,6 +126,7 @@ interface CrawlState {
     totalSynced: number;
     totalFailed: number;
     countriesProcessed: string[];
+    dropReasons?: { noWebsite: number; fetchFailed: number; unverified: number; duplicate: number };
   };
 }
 
@@ -130,6 +159,15 @@ const intakeStep = createStep({
     const runId = inputData.runId || `run-${Date.now()}`;
     const budget = createBudgetTracker(inputData.vmMinutesLimit, inputData.tokensLimit);
 
+    // Fail loudly on unknown countries — silently harvesting 0 candidates is
+    // the "where's my data?" bug.
+    const unknown = (inputData.countries as string[]).filter((c) => !HARVESTERS[c.toLowerCase()]);
+    if (unknown.length > 0) {
+      throw new Error(
+        `Unknown countries: ${unknown.join(", ")} — supported: ${Object.keys(HARVESTERS).join(", ")}`,
+      );
+    }
+
     const existing = loadCheckpoint<CrawlState>(runId, "intake");
     if (existing) {
       return { runId, candidates: existing.candidates, stats: existing.stats };
@@ -137,7 +175,9 @@ const intakeStep = createStep({
 
     const allCandidates: RegistryCandidate[] = [];
     const countriesProcessed: string[] = [];
+    setProgress(runId, "intake", 0, (inputData.countries as string[]).length, "harvesting candidates");
 
+    let intakeDone = 0;
     const harvestPromises = inputData.countries.map(async (country: string) => {
       const budgetCheck = checkBudget(budget);
       if (budgetCheck.exceeded) return [];
@@ -164,6 +204,8 @@ const intakeStep = createStep({
       }
 
       countriesProcessed.push(country);
+      intakeDone += 1;
+      setProgress(runId, "intake", intakeDone, (inputData.countries as string[]).length, `${country}: ${countryCandidates.length} candidates`);
       return countryCandidates;
     });
 
@@ -171,6 +213,17 @@ const intakeStep = createStep({
     for (const batch of results) {
       allCandidates.push(...batch);
     }
+    // Harvest queries for one country frequently return the same companies
+    // (broad registry matches) — dedupe by key so verify doesn't burn a
+    // Brave call + page fetch on the same company 3×.
+    const seenKeys = new Set<string>();
+    const deduped = allCandidates.filter((c) => {
+      if (seenKeys.has(c.key)) return false;
+      seenKeys.add(c.key);
+      return true;
+    });
+    allCandidates.length = 0;
+    allCandidates.push(...deduped);
 
     const stats = {
       totalCandidates: allCandidates.length,
@@ -178,6 +231,7 @@ const intakeStep = createStep({
       totalSynced: 0,
       totalFailed: 0,
       countriesProcessed,
+      dropReasons: { noWebsite: 0, fetchFailed: 0, unverified: 0, duplicate: 0 },
     };
 
     const state: CrawlState = { runId, candidates: allCandidates, verifiedLeads: [], stats };
@@ -238,8 +292,13 @@ const verifyStep = createStep({
 
     console.error(`[verify] starting: ${candidates.length} candidates`);
     const verifyStartedAt = Date.now();
+    // Where candidates drop out — surfaced in stats so a "0 leads" crawl
+    // tells you WHY instead of staying a mystery.
+    const drops = { noWebsite: 0, fetchFailed: 0, unverified: 0, duplicate: 0 };
+    setProgress(runId, "verify", 0, candidates.length, "verifying websites & contacts");
     for (let i = 0; i < (candidates as RegistryCandidate[]).length; i++) {
       const candidate = (candidates as RegistryCandidate[])[i];
+      setProgress(runId, "verify", i, candidates.length, candidate.name ?? `candidate ${i + 1}`);
       if (i % 10 === 0) {
         console.error(`[verify] progress ${i}/${candidates.length} elapsed=${((Date.now() - verifyStartedAt) / 1000).toFixed(0)}s`);
       }
@@ -253,7 +312,10 @@ const verifyStep = createStep({
           console.error(`[verify] website discovery ${candidate.key}:`, err);
         }
       }
-      if (!candidate.website) continue;
+      if (!candidate.website) {
+        drops.noWebsite += 1;
+        continue;
+      }
 
       const registry: RegistryInfo = {
         name: candidate.name,
@@ -263,13 +325,19 @@ const verifyStep = createStep({
       };
 
       const homePage = await fetchPage(candidate.website);
-      if (!homePage) continue;
+      if (!homePage) {
+        drops.fetchFailed += 1;
+        continue;
+      }
 
       const pages: PageContent[] = [homePage];
       const result = verify(pages, registry, candidate.website);
 
       if (result.verdict === "verified") {
-        if (verifiedSeen.has(candidate.key)) continue;
+        if (verifiedSeen.has(candidate.key)) {
+          drops.duplicate += 1;
+          continue;
+        }
         verifiedSeen.add(candidate.key);
 
         verifiedLeads.push({
@@ -289,10 +357,17 @@ const verifyStep = createStep({
           source_url: candidate.source_url,
           stage: "verified",
         });
+      } else {
+        drops.unverified += 1;
       }
     }
 
     stats.totalVerified = verifiedLeads.length;
+    stats.dropReasons = drops;
+    console.error(
+      `[verify] done: ${verifiedLeads.length}/${candidates.length} verified ` +
+        `(noWebsite=${drops.noWebsite} fetchFailed=${drops.fetchFailed} unverified=${drops.unverified} dup=${drops.duplicate})`,
+    );
 
     const state: CrawlState = {
       runId,
@@ -329,8 +404,11 @@ const extractStep = createStep({
     }
 
     const leads = verifiedLeads as SyncLead[];
+    setProgress(runId, "extract", 0, leads.length, "extracting contacts from websites");
 
-    for (const lead of leads) {
+    for (let i = 0; i < leads.length; i++) {
+      const lead = leads[i]!;
+      setProgress(runId, "extract", i, leads.length, lead.name ?? `lead ${i + 1}`);
       if (!lead.website) continue;
       if (lead.emails && lead.emails.length > 0) continue;
 
@@ -403,7 +481,9 @@ const finalizeStep = createStep({
       const syncSecret = process.env["SYNC_SECRET"];
 
       if (syncUrl && syncSecret) {
+        let syncDone = 0;
         for (const [country, countryLeads] of countryGroups) {
+          setProgress(runId, "finalize", syncDone, countryGroups.size, `syncing ${country} (${countryLeads.length} leads)`);
           try {
             const result = await syncCallback(syncUrl, syncSecret, runId, country, countryLeads);
             stats.totalSynced += result.pushed;
@@ -412,9 +492,11 @@ const finalizeStep = createStep({
             console.error(`[finalize] sync failed for ${country}:`, err);
             stats.totalFailed += countryLeads.length;
           }
+          syncDone += 1;
         }
       }
     }
+    setProgress(runId, "finalize", leads.length, Math.max(leads.length, 1), "done");
 
     return {
       runId,
@@ -423,6 +505,7 @@ const finalizeStep = createStep({
       totalSynced: stats.totalSynced,
       totalFailed: stats.totalFailed,
       countriesProcessed: stats.countriesProcessed,
+      dropReasons: stats.dropReasons ?? { noWebsite: 0, fetchFailed: 0, unverified: 0, duplicate: 0 },
       budgetUsed: {
         vmMinutes: Number(((Date.now() - (stats.startedAt || Date.now())) / 60_000).toFixed(2)),
         tokens: stats.tokensUsed || 0,

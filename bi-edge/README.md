@@ -69,6 +69,17 @@ Note: DO `getAlarm()`/`setAlarm()` are **async** on current compatibility
 dates — they must be awaited before the response returns (see
 `ensureAlarmArmed`, which also re-arms a stale alarm on the next request).
 
+### Live crawl status
+
+The engine's crawl "run" row only records the *queueing* of the job — the
+real 5–20 min crawl runs in bi-core. `GET /cmd/crawl-status` proxies
+bi-core's `/status`: live `progress` (`step / done / total / detail`), task
+states, and final stats incl. `dropReasons` (`noWebsite / fetchFailed /
+unverified / duplicate`) so a "0 leads" crawl explains itself. The UI Fleet
+card and Operations page poll it every 5s. The `countries` setting accepts
+full names ("Ireland, France" → `ie,fr`); unsupported countries fail the run
+loudly instead of harvesting nothing.
+
 ### Test mode & end-to-end simulation (no mailbox needed)
 
 Three settings let you exercise the whole send→reply→approve loop against

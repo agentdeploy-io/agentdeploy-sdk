@@ -390,6 +390,9 @@ function CampaignPanel({
         <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
           Countries (comma-separated crawl targets)
           <input className={fieldCls} value={form.countries ?? ""} onChange={(e) => set("countries", e.target.value)} placeholder="uk,ie,fr" />
+          <span className="text-[0.625rem] opacity-70">
+            Supported: uk, ie, fr, ee, pt — full names work too ("Ireland" → ie). Unsupported names make the crawl fail loudly.
+          </span>
         </label>
         <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
           Crawl limit (leads per run)
@@ -693,10 +696,12 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
     refetch: () => void;
   };
 
-  const loadAll = React.useCallback(async () => {
+  const loadAll = React.useCallback(async (quiet = false) => {
     if (!deploymentId) return;
-    setSchedulesLoading(true);
-    setSchedulesError(null);
+    if (!quiet) {
+      setSchedulesLoading(true);
+      setSchedulesError(null);
+    }
     try {
       const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes] =
         await Promise.all([
@@ -712,7 +717,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
         const j = (await schedRes.json()) as { schedules: OpSchedule[]; paused: boolean };
         setSchedules(j.schedules ?? []);
         setPaused(!!j.paused);
-      } else {
+      } else if (!quiet) {
         setSchedulesError(`Schedules: ${schedRes.status}`);
       }
       if (sentRes.ok) {
@@ -730,7 +735,8 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       if (settingsRes.ok) {
         const j = (await settingsRes.json()) as { settings: Record<string, string>; defaults: Record<string, unknown> };
         setSettings(j.settings ?? {});
-        setCapInput(String(j.settings?.dailyCap ?? j.defaults?.dailyCap ?? "10"));
+        // Don't clobber what the user is typing during background polling.
+        if (!quiet) setCapInput(String(j.settings?.dailyCap ?? j.defaults?.dailyCap ?? "10"));
       }
       if (pipelineRes.ok) {
         const j = (await pipelineRes.json()) as { funnel?: Array<{ stage: string; count: number }> };
@@ -742,14 +748,18 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
         setTestModeOn(j.testMode === true);
       }
     } catch (err) {
-      setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
+      if (!quiet) setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
     } finally {
-      setSchedulesLoading(false);
+      if (!quiet) setSchedulesLoading(false);
     }
   }, [deploymentId]);
 
   React.useEffect(() => {
     loadAll();
+    // Background poll so schedules / sent rows / drafts / funnel update in
+    // place while you're working — no manual refresh needed.
+    const id = setInterval(() => loadAll(true), 5000);
+    return () => clearInterval(id);
   }, [loadAll]);
 
   const lastRun: CrawlRunEntry | undefined = runs[0];
@@ -850,7 +860,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
           <Badge variant={paused ? "warning" : "success"}>
             {paused ? "Paused" : "Running"}
           </Badge>
-          <Button variant="outline" size="sm" onClick={loadAll}>
+          <Button variant="outline" size="sm" onClick={() => loadAll()}>
             <RefreshCw className={schedulesLoading ? "animate-spin" : ""} />
             Refresh
           </Button>
