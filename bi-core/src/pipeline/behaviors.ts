@@ -6,6 +6,7 @@
 import { verify, type PageContent, type RegistryInfo } from "../verification.js";
 import { extractContacts, validateMxRecords, CONTACT_PATHS } from "../extraction.js";
 import { fetchPageContent, fetchContactPages } from "./page.js";
+import { probeMonetization, smartFetch, type SmartFetchResult } from "./renderer.js";
 import { llmJson, llmConfigured } from "./llm.js";
 import type {
   Candidate,
@@ -151,19 +152,23 @@ export async function verifyRegistry(ctx: VerifyCtx): Promise<VerifyResult> {
 // ── verify: website name-match ─────────────────────────────────────────────
 
 export type WebsiteCheckResult =
-  | { verdict: "verified" | "flagged" | "rejected"; score: number; signals: string[]; page: PageContent }
+  | { verdict: "verified" | "flagged" | "rejected"; score: number; signals: string[]; page: PageContent; rendered: boolean }
   | { reason: "no_website" | "fetch_failed" };
 
 export async function checkWebsite(ctx: VerifyCtx): Promise<WebsiteCheckResult> {
   const { pack, candidate } = ctx;
   if (!candidate.website) {
     if (!pack.requireWebsite) {
-      return { verdict: "flagged", score: 0, signals: ["no website found"], page: { url: "", html: "", text: "" } };
+      return { verdict: "flagged", score: 0, signals: ["no website found"], page: { url: "", html: "", text: "" }, rendered: false };
     }
     return { reason: "no_website" };
   }
-  const page = await fetchPageContent(candidate.website);
-  if (!page) return { reason: "fetch_failed" };
+  // Plain fetch first; JS-shell sites are re-fetched in headless chromium so
+  // the rendered DOM (where SPA content + payment scripts actually live) is
+  // what gets verified and enriched.
+  const fetched = await smartFetch(candidate.website);
+  if (!fetched) return { reason: "fetch_failed" };
+  const { page, rendered } = fetched;
   const registry: RegistryInfo = {
     name: candidate.name,
     city: candidate.city,
@@ -183,16 +188,18 @@ export async function checkWebsite(ctx: VerifyCtx): Promise<WebsiteCheckResult> 
     verdict = "flagged";
     signals.push("name-unconfirmed (dork source)");
   }
+  if (rendered) signals.push("rendered-dom");
+  signals.push(...probeMonetization(page.html, candidate.website));
 
-  return { verdict, score: result.score, signals, page };
+  return { verdict, score: result.score, signals, page, rendered };
 }
 
 // ── enrich: contacts (regex + MX-gated guessing) ───────────────────────────
 
 const GUESSED_LOCALS = ["info@", "hello@", "contact@", "support@"];
 
-export async function enrichContacts(ctx: EnrichCtx, candidate: Candidate): Promise<SyncedLead> {
-  const { pack, country, env } = ctx;
+export async function enrichContacts(ctx: EnrichCtx, candidate: Candidate, home?: SmartFetchResult): Promise<SyncedLead> {
+  const { pack, country } = ctx;
   const lead: SyncedLead = {
     ...candidate,
     score: 0,
@@ -200,8 +207,20 @@ export async function enrichContacts(ctx: EnrichCtx, candidate: Candidate): Prom
   };
   if (!candidate.website) return lead;
 
-  const paths = CONTACT_PATHS[country] ?? CONTACT_PATHS["default"] ?? [];
-  const pages = await fetchContactPages(candidate.website, paths);
+  const paths = (CONTACT_PATHS[country] ?? CONTACT_PATHS["default"] ?? []).slice(0, 3);
+  let pages: PageContent[];
+  if (home) {
+    // Reuse the page the verify stage already fetched. SPAs get their
+    // contact subpages rendered too — the shell would otherwise be empty.
+    pages = [home.page];
+    const base = candidate.website.replace(/\/$/, "");
+    for (const p of paths) {
+      const sub = home.rendered ? (await smartFetch(`${base}${p}`))?.page : await fetchPageContent(`${base}${p}`);
+      if (sub) pages.push(sub);
+    }
+  } else {
+    pages = await fetchContactPages(candidate.website, paths);
+  }
   if (pages.length > 0) {
     const extraction = await extractContacts(
       pages.map((p) => ({ url: p.url, html: p.html, text: p.text })),

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mastra } from "./mastra/index.js";
 import { getCrawlProgress } from "./mastra/workflows/crawl.js";
 import { installFetchTimeout } from "./http.js";
+import { closeBrowser } from "./pipeline/renderer.js";
 import type { CoreMessage } from "ai";
 
 // Dev convenience: load packages/bi-core/.env when present. Variables already
@@ -280,3 +281,10 @@ const server = createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`[bi-core] mastra server listening on :${PORT}`);
 });
+
+// Don't orphan the headless chromium when the server is restarted/killed.
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    void closeBrowser().finally(() => process.exit(0));
+  });
+}

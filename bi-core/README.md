@@ -134,6 +134,18 @@ score     verified +40 / flagged +25 · relevance×0.3 (≤30) · email +15 ·
 sync      batches → engine /inbound/sync
 ```
 
+**Rendered-DOM scraping** (`src/pipeline/renderer.ts`, Playwright + headless
+chromium): pages are fetched plain first; when a page is a JS shell
+(Next/Nuxt/React SPA with a near-empty body) it is re-fetched in a real
+browser and the *rendered* DOM is what gets verified and enriched — contacts
+and payment scripts that only exist after hydration are found too. The
+browser is launched lazily, shared across the run, and closed after 10 min
+idle (also on SIGTERM). The **monetization probe** (ported from
+agent-recon's payments-probe) scans the (rendered) HTML for payment
+infrastructure (stripe/paddle/lemonsqueezy/paypal/gumroad/braintree/square/
+mollie/razorpay/klarna + crypto providers), pricing-page links and
+paid-tier terms; signals land in the lead's `website_evidence`.
+
 Every drop is counted by reason (`registry_sic / no_website / fetch_failed /
 website_unverified / icp_mismatch / below_min_score / budget / duplicate`)
 and reported in the finished task's `result.dropReasons`.

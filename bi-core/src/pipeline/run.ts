@@ -18,6 +18,7 @@ import {
   verifyRegistry,
 } from "./behaviors.js";
 import { pipelineSearch } from "./search.js";
+import type { SmartFetchResult } from "./renderer.js";
 import {
   emptyDrops,
   emptyStats,
@@ -108,7 +109,7 @@ export async function runVerticalPack(
     }
 
     // ── verify ──
-    const websiteChecks = new Map<string, { verdict: "verified" | "flagged"; score: number; signals: string[]; text: string }>();
+    const websiteChecks = new Map<string, { verdict: "verified" | "flagged"; score: number; signals: string[]; text: string; home: SmartFetchResult }>();
     const verified: Candidate[] = [];
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i]!;
@@ -134,7 +135,7 @@ export async function runVerticalPack(
         drops.website_unverified += 1;
         continue;
       }
-      websiteChecks.set(c.key, { verdict: web.verdict, score: web.score, signals: web.signals, text: web.page.text });
+      websiteChecks.set(c.key, { verdict: web.verdict, score: web.score, signals: web.signals, text: web.page.text, home: { page: web.page, rendered: web.rendered } });
       c.website_status = web.verdict;
       verified.push(c);
     }
@@ -150,8 +151,9 @@ export async function runVerticalPack(
       }
       cb.progress({ stage: "enrich", done: i, total: verified.length, detail: c.name });
       const ctx = { pack, country, env, candidate: c, drops };
+      const home = websiteChecks.get(c.key)?.home;
 
-      const lead = await enrichContacts(ctx, c);
+      const lead = await enrichContacts(ctx, c, home);
       let relevance = 50;
       let hasLlm = false;
       let llmReason = "LLM off";
