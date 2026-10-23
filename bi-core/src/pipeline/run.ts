@@ -32,6 +32,7 @@ import {
   probeList,
   sourceList,
 } from "./sources.js";
+import { getCustomSource, isCustomSource } from "./custom-sources.js";
 import {
   emptyDrops,
   emptyStats,
@@ -137,6 +138,10 @@ export async function runVerticalPack(
           batch = await discoverDorks({ pack, country, env, search, limit, drops }, stats);
         } else if (src === "registry") {
           batch = await discoverRegistry({ pack, country, env, search, limit, drops });
+        } else if (isCustomSource(src)) {
+          const custom = getCustomSource(src)!;
+          const hits = await custom.discover({ pack, country, env, search, limit, drops });
+          batch = hitsToCandidates(country, hits, src);
         } else {
           const fn =
             src === "commoncrawl" ? discoverCommonCrawl :

@@ -8,6 +8,7 @@ import { dorkPhrases, urlscanSearch } from "./search.js";
 import { fetchPageContent } from "./page.js";
 import { llmConfigured, llmJson } from "./llm.js";
 import { harvestEE, harvestIE, harvestPT } from "../mastra/workflows/registry-intake.js";
+import { isCustomSource } from "./custom-sources.js";
 
 export const SOURCE_IDS = ["dorks", "commoncrawl", "github", "urlscan", "defillama", "registry"] as const;
 export const PROBE_IDS = ["monetization", "techstack", "intent"] as const;
@@ -15,7 +16,7 @@ export const PROBE_IDS = ["monetization", "techstack", "intent"] as const;
 export function sourceList(pack: VerticalPack): string[] {
   const s = pack.sources;
   if (!s || s.length === 0) return ["dorks"];
-  return s.filter((x) => (SOURCE_IDS as readonly string[]).includes(x));
+  return s.filter((x) => (SOURCE_IDS as readonly string[]).includes(x) || isCustomSource(x));
 }
 
 export function probeList(pack: VerticalPack): string[] {

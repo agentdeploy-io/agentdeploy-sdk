@@ -107,6 +107,18 @@ feed the pipeline:
   stored one. Thin proxy to the core, so the Workers 30s cap is never hit.
 - `GET /cmd/sources/test/:id` → `{state: running|done|failed, candidates?}`.
 
+**AI Scraper Builder** — the LLM writes sandboxed discovery modules
+(`src/scraper/*` in the core; see the core README for the contract):
+
+- `POST /cmd/scrapers/generate {prompt}` → `{taskId}` (LLM writes the module)
+- `GET /cmd/scrapers/generate/:id` → `{state, result?: {id, description, code}}`
+- `POST /cmd/scrapers/test {code, vertical?}` → `{taskId}` (sandboxed run)
+- `GET /cmd/scrapers/test/:id` → `{state, result?: {ok, hits?|error?}}`
+- `POST /cmd/scrapers {id, description, code}` — register (validated +
+  persisted in the core's `DATA_DIR/custom-sources/`)
+- `GET /cmd/scrapers` → `{scrapers: [{id, description, createdAt}]}`
+- `DELETE /cmd/scrapers/:id` — remove.
+
 `POST /cmd/schedules/crawl/run {"verticalId":"…"}` pins a vertical for a
 manual run; the **cron** always uses the *default* vertical, and with none
 configured it falls back to the legacy registry harvest (`countries`

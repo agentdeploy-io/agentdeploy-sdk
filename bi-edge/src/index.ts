@@ -207,6 +207,7 @@ export class BiEdgeAgent {
           "GET /cmd/crawl-status",
           "GET|POST|DELETE /cmd/verticals",
           "POST /cmd/sources/test · GET /cmd/sources/test/:id",
+          "GET|POST|DELETE /cmd/scrapers · POST /cmd/scrapers/generate|test · GET /cmd/scrapers/generate/:id|test/:id",
           "GET /cmd/replies",
           "GET /cmd/sent",
           "GET|POST /cmd/schedules",
@@ -252,6 +253,10 @@ export class BiEdgeAgent {
 
     if (url.pathname === "/cmd/sources/test" || url.pathname.startsWith("/cmd/sources/test/")) {
       return withCors(await this.handleSourceTest(request, env, db));
+    }
+
+    if (url.pathname === "/cmd/scrapers" || url.pathname.startsWith("/cmd/scrapers/")) {
+      return withCors(await this.handleScrapers(request, env));
     }
 
     if (url.pathname === "/cmd/settings") {
@@ -638,6 +643,101 @@ export class BiEdgeAgent {
       } finally {
         clearTimeout(t);
       }
+    }
+
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  /**
+   * AI Scraper Builder — thin proxies to the core (all hops fast; the core
+   * does the LLM call / sandboxed run async and hands back a task id).
+   *   POST /cmd/scrapers/generate {prompt} → {taskId}
+   *   GET  /cmd/scrapers/generate/:id — poll the generated {id, description, code}
+   *   POST /cmd/scrapers/test {code, vertical?} → {taskId}
+   *   GET  /cmd/scrapers/test/:id — poll the sandboxed {ok, hits?|error?}
+   *   POST /cmd/scrapers {id, description, code} → register (validated + persisted)
+   *   GET  /cmd/scrapers → {scrapers: [{id, description, createdAt}]}
+   *   DELETE /cmd/scrapers/:id → remove
+   */
+  private async handleScrapers(request: Request, env: Record<string, unknown>): Promise<Response> {
+    const coreUrl = String(env.CORE_URL ?? "").replace(/\/$/, "");
+    if (!coreUrl) return json({ error: "CORE_URL not configured" }, 503);
+    const pathname = new URL(request.url).pathname;
+    const proxy = async (
+      path: string,
+      method: string,
+      body?: unknown,
+      timeoutMs = 12_000,
+    ): Promise<Response> => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(`${coreUrl}${path}`, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: ctrl.signal,
+        });
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        return json(data, res.status === 204 ? 200 : res.status);
+      } catch (e) {
+        return json({ error: `core unreachable: ${(e as Error).message}` }, 502);
+      } finally {
+        clearTimeout(t);
+      }
+    };
+
+    if (request.method === "POST" && pathname === "/cmd/scrapers/generate") {
+      let body: { prompt?: string } = {};
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Invalid JSON" }, 400);
+      }
+      if (!body.prompt || !body.prompt.trim()) return json({ error: "prompt required" }, 400);
+      return proxy("/v1/scrapers/generate", "POST", { prompt: body.prompt.trim() }, 10_000);
+    }
+
+    const genMatch = pathname.match(/^\/cmd\/scrapers\/generate\/([^/]+)$/);
+    if (request.method === "GET" && genMatch) {
+      return proxy(`/v1/scrapers/generate/${genMatch[1]}`, "GET", undefined, 5_000);
+    }
+
+    if (request.method === "POST" && pathname === "/cmd/scrapers/test") {
+      let body: { code?: string; vertical?: Record<string, unknown> } = {};
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Invalid JSON" }, 400);
+      }
+      if (!body.code) return json({ error: "code required" }, 400);
+      // vertical is optional — the core falls back to a minimal smoke-test pack.
+      return proxy("/v1/scrapers/test", "POST", { code: body.code, vertical: body.vertical }, 10_000);
+    }
+
+    const testMatch = pathname.match(/^\/cmd\/scrapers\/test\/([^/]+)$/);
+    if (request.method === "GET" && testMatch) {
+      return proxy(`/v1/scrapers/test/${testMatch[1]}`, "GET", undefined, 5_000);
+    }
+
+    if (request.method === "POST" && pathname === "/cmd/scrapers") {
+      let body: { id?: string; description?: string; code?: string } = {};
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Invalid JSON" }, 400);
+      }
+      if (!body.id || !body.code) return json({ error: "id and code required" }, 400);
+      return proxy("/v1/scrapers", "POST", body, 10_000);
+    }
+
+    if (request.method === "GET" && pathname === "/cmd/scrapers") {
+      return proxy("/v1/scrapers", "GET", undefined, 5_000);
+    }
+
+    const delMatch = pathname.match(/^\/cmd\/scrapers\/([^/]+)$/);
+    if (request.method === "DELETE" && delMatch) {
+      return proxy(`/v1/scrapers/${delMatch[1]}`, "DELETE", undefined, 10_000);
     }
 
     return json({ error: "Method not allowed" }, 405);

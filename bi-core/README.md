@@ -189,6 +189,32 @@ Every drop is counted by reason (`registry_sic / no_website / fetch_failed /
 website_unverified / icp_mismatch / below_min_score / budget / duplicate`)
 and reported in the finished task's `result.dropReasons`.
 
+**AI Scraper Builder** (`src/pipeline/custom-sources.ts`,
+`src/scraper/{service,runner}.ts`). When no built-in source fits a niche,
+the operator describes where to find the companies and the LLM writes a
+sandboxed discovery module — no deploy needed. Flow:
+
+- `POST /v1/scrapers/generate {prompt}` → 202 `{taskId}` — DeepSeek writes
+  `module.exports = { id, description, discover(ctx) }` against a strict
+  contract (few-shot in `src/scraper/service.ts`); `GET /v1/scrapers/generate/:id`
+  polls for `{id, description, code}`.
+- `POST /v1/scrapers/test {code, vertical?}` → 202 `{taskId}` — the code runs
+  in a **separate node child process** (`--max-old-space-size=256`, 70s
+  SIGKILL, minimal env) **and** inside a `node:vm` context exposing only
+  `fetch/URL/JSON/Math/Date/RegExp/AbortSignal/TextDecoder/Encoder/console/
+  setTimeout(≤5s)` — no `require`, no `process`, no fs. `GET
+  /v1/scrapers/test/:id` polls for `{ok, hits?}`.
+- `POST /v1/scrapers {id, description, code}` — shape-validates the module,
+  persists it to `DATA_DIR/custom-sources/<id>.js` and registers it. `GET
+  /v1/scrapers` lists, `DELETE /v1/scrapers/:id` removes. Files are reloaded
+  at boot, so registered scrapers survive restarts and are selectable as
+  vertical `sources` (merged into `sourceList`, dispatched in `run.ts` like
+  the built-ins).
+
+The operator always reviews the generated code and smoke-test hits before
+registering; a registered scraper failing at crawl time is skipped like any
+other source (never fatal).
+
 **Search stack** (`src/pipeline/search.ts`): Brave Search API first, with a
 monthly quota tracked on disk (`DATA_DIR/brave-usage.json`, cap
 `BRAVE_QUOTA_CAP`, default **1000**). When Brave is exhausted the run

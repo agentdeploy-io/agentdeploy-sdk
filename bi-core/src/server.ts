@@ -16,6 +16,8 @@ import { discoverDorks } from "./pipeline/behaviors.js";
 import { pipelineSearch } from "./pipeline/search.js";
 import { normalizePack } from "./pipeline/run.js";
 import { emptyDrops, emptyStats, type Candidate } from "./pipeline/types.js";
+import { loadCustomSources, getCustomSource, isCustomSource } from "./pipeline/custom-sources.js";
+import { generateScraper, testScraper, registerScraper, removeScraper, listScrapers } from "./scraper/service.js";
 import type { CoreMessage } from "ai";
 
 // Dev convenience: load packages/bi-core/.env when present. Variables already
@@ -64,6 +66,30 @@ interface SourceTest {
   error?: string;
 }
 const sourceTests = new Map<string, SourceTest>();
+
+// AI Scraper Builder tasks: LLM code generation + sandboxed smoke tests,
+// both run async so the Workers-side proxy never hits its 30s cap.
+interface ScraperTask {
+  id: string;
+  kind: "generate" | "test";
+  state: "running" | "done" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+  result?: { id: string; description: string; code: string } | { ok: boolean; hits?: unknown[]; error?: string };
+  error?: string;
+}
+const scraperTasks = new Map<string, ScraperTask>();
+
+function newScraperTask(kind: ScraperTask["kind"]): ScraperTask {
+  seq += 1;
+  const t: ScraperTask = { id: `scraper-${seq}`, kind, state: "running", startedAt: new Date().toISOString() };
+  scraperTasks.set(t.id, t);
+  if (scraperTasks.size > 20) {
+    const oldest = [...scraperTasks.keys()][0];
+    if (oldest) scraperTasks.delete(oldest);
+  }
+  return t;
+}
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -219,6 +245,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
           candidates = hitsToCandidates(country, await discoverUrlScan(ctx), source);
         } else if (source === "defillama") {
           candidates = hitsToCandidates(country, await discoverDefiLlama(ctx), source);
+        } else if (isCustomSource(source)) {
+          candidates = hitsToCandidates(country, await getCustomSource(source)!.discover(ctx), source);
         } else {
           test.state = "failed";
           test.error = `unknown source: ${source}`;
@@ -234,6 +262,98 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
     })();
     return json(res, 202, { taskId: test.id });
+  }
+
+  // ── AI Scraper Builder ─────────────────────────────────────────────────────
+  //   POST /v1/scrapers/generate {prompt} → 202 {taskId}   (LLM writes a module)
+  //   GET  /v1/scrapers/generate/:id → {state, result?: {id, description, code}}
+  //   POST /v1/scrapers/test {code, vertical?} → 202 {taskId}  (sandboxed run)
+  //   GET  /v1/scrapers/test/:id → {state, result?: {ok, hits?|error?}}
+  //   POST /v1/scrapers {id, description, code} → 201 (validated + persisted)
+  //   GET  /v1/scrapers → [{id, description, createdAt}]
+  //   DELETE /v1/scrapers/:id → 200 | 404
+  if (req.method === "GET" && p.startsWith("/v1/scrapers/generate/")) {
+    const t = scraperTasks.get(p.slice("/v1/scrapers/generate/".length));
+    if (!t) return json(res, 404, { error: "not found" });
+    return json(res, 200, t);
+  }
+
+  if (req.method === "GET" && p.startsWith("/v1/scrapers/test/")) {
+    const t = scraperTasks.get(p.slice("/v1/scrapers/test/".length));
+    if (!t) return json(res, 404, { error: "not found" });
+    return json(res, 200, t);
+  }
+
+  if (req.method === "POST" && p === "/v1/scrapers/generate") {
+    let body: { prompt?: string } = {};
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      return json(res, 400, { error: "invalid json" });
+    }
+    if (!body.prompt || !body.prompt.trim()) return json(res, 400, { error: "prompt required" });
+    const task = newScraperTask("generate");
+    const prompt = body.prompt.trim();
+    void (async () => {
+      try {
+        task.result = await generateScraper(prompt, { ...process.env } as Record<string, string>);
+        task.state = "done";
+      } catch (e) {
+        task.state = "failed";
+        task.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        task.finishedAt = new Date().toISOString();
+      }
+    })();
+    return json(res, 202, { taskId: task.id });
+  }
+
+  if (req.method === "POST" && p === "/v1/scrapers/test") {
+    let body: { code?: string; vertical?: Record<string, unknown> } = {};
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      return json(res, 400, { error: "invalid json" });
+    }
+    if (!body.code) return json(res, 400, { error: "code required" });
+    const code = body.code;
+    const pack = body.vertical ? normalizePack(body.vertical as Parameters<typeof normalizePack>[0]) : normalizePack({ id: "smoketest", name: "Smoke Test", countries: ["uk"], dorks: [], perCountryLimit: 15 });
+    const task = newScraperTask("test");
+    void (async () => {
+      try {
+        task.result = (await testScraper(code, pack, { ...process.env } as Record<string, string>)) as ScraperTask["result"];
+        task.state = "done";
+      } catch (e) {
+        task.state = "failed";
+        task.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        task.finishedAt = new Date().toISOString();
+      }
+    })();
+    return json(res, 202, { taskId: task.id });
+  }
+
+  if (req.method === "POST" && p === "/v1/scrapers") {
+    let body: { id?: string; description?: string; code?: string } = {};
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      return json(res, 400, { error: "invalid json" });
+    }
+    if (!body.id || !body.code) return json(res, 400, { error: "id and code required" });
+    const out = registerScraper(process.env["DATA_DIR"] || "/data", body.id, body.description ?? "", body.code);
+    if (!out.ok) return json(res, 400, { error: out.error });
+    return json(res, 201, { id: out.source.id, description: out.source.description });
+  }
+
+  if (req.method === "GET" && p === "/v1/scrapers") {
+    return json(res, 200, { scrapers: listScrapers() });
+  }
+
+  if (req.method === "DELETE" && p.startsWith("/v1/scrapers/")) {
+    const id = p.slice("/v1/scrapers/".length);
+    if (!removeScraper(process.env["DATA_DIR"] || "/data", id)) return json(res, 404, { error: "not found" });
+    return json(res, 200, { removed: id });
   }
 
   // Contract used by bi-edge's crawl cron (src/cron/crawl.ts):
@@ -362,6 +482,11 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   return json(res, 404, { error: `no route: ${req.method} ${p}` });
 }
+
+// Load operator-approved custom scrapers (DATA_DIR/custom-sources/*.js) so
+// they're available as vertical sources immediately after a restart.
+const loadedScrapers = loadCustomSources(process.env["DATA_DIR"] || "/data");
+if (loadedScrapers.length) console.log(`[bi-core] loaded custom scrapers: ${loadedScrapers.join(", ")}`);
 
 const server = createServer((req, res) => {
   void handle(req, res).catch((err) => {

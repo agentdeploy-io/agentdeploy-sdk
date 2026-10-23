@@ -34,6 +34,8 @@ import {
   Send,
   Square,
   Timer,
+  Trash2,
+  Wand2,
   Zap,
 } from "lucide-react";
 import { Badge, Button, Card, Dialog, Skeleton, Textarea } from "@/components/ui";
@@ -497,12 +499,318 @@ const PROBE_META: SourceMeta[] = [
   { id: "intent", label: "intent", hint: "Wayback recency + OpenPageRank authority" },
 ];
 
+interface GeneratedScraper {
+  id: string;
+  description: string;
+  code: string;
+}
+
+interface ScraperEntry {
+  id: string;
+  description: string;
+  createdAt: string;
+}
+
+/**
+ * ScraperBuilderPanel — Phase 3: describe a source in plain language, the
+ * LLM writes a sandboxed CommonJS module, you smoke-test it against a live
+ * vertical, review the code, and register it. Registered scrapers show up as
+ * selectable sources on every vertical (and persist across core restarts).
+ */
+function ScraperBuilderPanel({
+  deploymentId,
+  registered,
+  onChanged,
+}: {
+  deploymentId: string;
+  registered: ScraperEntry[] | null;
+  onChanged: () => void;
+}) {
+  const [prompt, setPrompt] = React.useState("");
+  const [genTask, setGenTask] = React.useState<{ id: string; state: "running" | "done" | "failed" } | null>(null);
+  const [generated, setGenerated] = React.useState<GeneratedScraper | null>(null);
+  const [genError, setGenError] = React.useState<string | null>(null);
+
+  const [testTask, setTestTask] = React.useState<{ id: string; state: "running" | "done" | "failed" } | null>(null);
+  const [testHits, setTestHits] = React.useState<Array<{ url: string; title: string; description: string }> | null>(null);
+  const [testError, setTestError] = React.useState<string | null>(null);
+
+  const [verticals, setVerticals] = React.useState<Vertical[]>([]);
+  const [testVerticalId, setTestVerticalId] = React.useState<string>("");
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    authFetch(`${proxyBase(deploymentId)}/cmd/verticals`, { signal: AbortSignal.timeout(10000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled) return;
+        const list: Vertical[] = j?.verticals ?? [];
+        setVerticals(list);
+        if (!testVerticalId) {
+          setTestVerticalId((list.find((v) => v.isDefault) ?? list[0])?.id ?? "");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deploymentId]);
+
+  // Poll the LLM generation task.
+  React.useEffect(() => {
+    if (!genTask || genTask.state !== "running") return;
+    const id = setInterval(async () => {
+      try {
+        const res = await authFetch(`${proxyBase(deploymentId)}/cmd/scrapers/generate/${genTask.id}`, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) return;
+        const j = (await res.json()) as { state: string; result?: GeneratedScraper; error?: string };
+        if (j.state === "done" && j.result) {
+          setGenTask({ id: genTask.id, state: "done" });
+          setGenerated(j.result);
+          setGenError(null);
+          setTestHits(null);
+          setTestError(null);
+        } else if (j.state === "failed") {
+          setGenTask({ id: genTask.id, state: "failed" });
+          setGenError(j.error ?? "generation failed");
+        }
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 2500);
+    return () => clearInterval(id);
+  }, [genTask, deploymentId]);
+
+  // Poll the sandboxed smoke-test task.
+  React.useEffect(() => {
+    if (!testTask || testTask.state !== "running") return;
+    const id = setInterval(async () => {
+      try {
+        const res = await authFetch(`${proxyBase(deploymentId)}/cmd/scrapers/test/${testTask.id}`, { signal: AbortSignal.timeout(10000) });
+        if (!res.ok) return;
+        const j = (await res.json()) as { state: string; result?: { ok: boolean; hits?: Array<{ url: string; title: string; description: string }>; error?: string }; error?: string };
+        if (j.state === "failed") {
+          setTestTask({ id: testTask.id, state: "failed" });
+          setTestError(j.error ?? "smoke test failed");
+        } else if (j.state === "done" && j.result) {
+          setTestTask({ id: testTask.id, state: "done" });
+          if (j.result.ok) {
+            setTestHits(j.result.hits ?? []);
+            setTestError(null);
+          } else {
+            setTestError(j.result.error ?? "smoke test failed");
+          }
+        }
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 2500);
+    return () => clearInterval(id);
+  }, [testTask, deploymentId]);
+
+  const generate = async () => {
+    if (!prompt.trim()) return;
+    setBusy(true);
+    setGenError(null);
+    setGenerated(null);
+    setTestHits(null);
+    setTestError(null);
+    setTestTask(null);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/scrapers/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: prompt.trim() }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const j = (await res.json()) as { taskId?: string };
+      if (!j.taskId) throw new Error("no taskId");
+      setGenTask({ id: j.taskId, state: "running" });
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "generate failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const smokeTest = async () => {
+    if (!generated) return;
+    const vertical = verticals.find((v) => v.id === testVerticalId) ?? null;
+    setBusy(true);
+    setTestError(null);
+    setTestHits(null);
+    setTestTask(null);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/scrapers/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: generated.code, vertical: vertical ?? undefined }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const j = (await res.json()) as { taskId?: string };
+      if (!j.taskId) throw new Error("no taskId");
+      setTestTask({ id: j.taskId, state: "running" });
+    } catch (e) {
+      setTestError(e instanceof Error ? e.message : "smoke test failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const register = async () => {
+    if (!generated) return;
+    setBusy(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/scrapers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: generated.id, description: generated.description, code: generated.code }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(j.error ?? `${res.status}`);
+      }
+      toast.success(`Scraper "${generated.id}" registered`, "It now appears as a source on every vertical.");
+      setGenerated(null);
+      setPrompt("");
+      setTestHits(null);
+      setTestError(null);
+      onChanged();
+    } catch (e) {
+      toast.error("Failed to register scraper", e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/scrapers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      toast.success(`Scraper "${id}" removed`);
+      onChanged();
+    } catch (e) {
+      toast.error("Failed to remove scraper", e instanceof Error ? e.message : "Unknown error");
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {/* ── Builder ─────────────────────────────────────────── */}
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+          Describe the source you want
+          <Textarea
+            className="min-h-20 font-mono text-[0.75rem]"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={'e.g. "find UK web design agencies from the GitHub topic web-design and return their homepage sites"'}
+          />
+        </label>
+        <div className="flex items-center gap-2">
+          <Button onClick={generate} disabled={busy || !prompt.trim()}>
+            <Wand2 className="size-3.5" /> Generate scraper
+          </Button>
+          {genTask?.state === "running" && (
+            <span className="text-[0.6875rem] text-muted-foreground">writing module…</span>
+          )}
+        </div>
+        {genError && <p className="text-[0.6875rem] text-destructive">{genError}</p>}
+        {generated && (
+          <div className="flex flex-col gap-2 rounded-md border border-border bg-surface-canvas p-2.5">
+            <div className="text-[0.75rem]">
+              <span className="font-mono font-medium">{generated.id}</span>
+              <span className="ml-2 text-[0.6875rem] text-muted-foreground">{generated.description}</span>
+            </div>
+            <pre className="max-h-56 overflow-auto rounded bg-surface p-2 text-[0.65rem] leading-snug">{generated.code}</pre>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className={fieldCls}
+                value={testVerticalId}
+                onChange={(e) => setTestVerticalId(e.target.value)}
+                disabled={verticals.length === 0}
+              >
+                {verticals.length === 0 && <option value="">no verticals</option>}
+                {verticals.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+              <Button size="sm" variant="outline" onClick={smokeTest} disabled={busy}>
+                <FlaskConical className="size-3.5" />
+                {testTask?.state === "running" ? "Testing…" : "Smoke test"}
+              </Button>
+              <Button size="sm" onClick={register} disabled={busy}>
+                Register
+              </Button>
+            </div>
+            {testTask?.state === "running" && <p className="text-[0.6875rem] text-muted-foreground">running sandboxed…</p>}
+            {testError && <p className="text-[0.6875rem] text-destructive">{testError}</p>}
+            {testHits && (
+              <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                {testHits.length === 0 && (
+                  <p className="text-[0.6875rem] opacity-70">
+                    0 hits — the source ran clean but found nothing. Adjust the prompt or try another vertical.
+                  </p>
+                )}
+                {testHits.map((h, i) => (
+                  <div key={i} className="text-[0.6875rem]">
+                    <span className="font-medium">{h.title}</span>
+                    <span className="ml-1 font-mono opacity-70">{h.url}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Registered scrapers ─────────────────────────────── */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[0.6875rem] font-medium text-muted-foreground">
+          Registered scrapers <span className="opacity-60">({registered?.length ?? 0})</span>
+        </span>
+        <div className="flex flex-col gap-1">
+          {registered == null && <p className="text-[0.6875rem] text-muted-foreground">loading…</p>}
+          {registered?.length === 0 && (
+            <p className="text-[0.6875rem] opacity-70">
+              None yet — generate one on the left. Registered scrapers are selectable sources on every vertical and survive core restarts.
+            </p>
+          )}
+          {registered?.map((s) => (
+            <div key={s.id} className="flex items-center gap-2 rounded-md border border-dashed border-border px-2 py-1.5">
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-[0.75rem]">{s.id}</div>
+                <div className="truncate text-[0.625rem] text-muted-foreground" title={s.description}>{s.description}</div>
+              </div>
+              <Button size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem] text-destructive" onClick={() => remove(s.id)}>
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function VerticalsPanel({
   deploymentId,
   onRunVertical,
+  customSources,
 }: {
   deploymentId: string;
   onRunVertical: (id: string) => Promise<void>;
+  customSources?: Array<{ id: string; description: string }>;
 }) {
   const [verticals, setVerticals] = React.useState<Vertical[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -884,6 +1192,33 @@ function VerticalsPanel({
                   </div>
                 );
               })}
+              {customSources?.map((s) => {
+                const on = sourcesSel.includes(s.id);
+                return (
+                  <div key={s.id} className="rounded-md border border-dashed border-border px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <label className="flex flex-1 items-center gap-1.5 text-[0.75rem]">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={(e) => setSourcesSel((cur) => (e.target.checked ? [...cur, s.id] : cur.filter((x) => x !== s.id)))}
+                        />
+                        <span className="font-mono">{s.id}</span>
+                        <span className="truncate text-[0.625rem] opacity-60" title={s.description}>{s.description || "custom scraper"}</span>
+                      </label>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[0.6875rem]"
+                        onClick={() => testSource(s.id)}
+                        disabled={test?.state === "running" && test.source === s.id}
+                      >
+                        {test?.state === "running" && test.source === s.id ? "Testing…" : "Test"}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -1213,6 +1548,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
   const [sent, setSent] = React.useState<SentEntry[] | null>(null);
   const [pendingDrafts, setPendingDrafts] = React.useState<number | null>(null);
   const [funnel, setFunnel] = React.useState<Array<{ stage: string; count: number }> | null>(null);
+  const [scrapers, setScrapers] = React.useState<ScraperEntry[] | null>(null);
   const [testRecipient, setTestRecipient] = React.useState("");
   const [testModeOn, setTestModeOn] = React.useState(false);
   const [simulateEntry, setSimulateEntry] = React.useState<SentEntry | null>(null);
@@ -1229,7 +1565,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       setSchedulesError(null);
     }
     try {
-      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes] =
+      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes, scrapersRes] =
         await Promise.all([
           authFetch(`${proxyBase(deploymentId)}/cmd/schedules`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/sent?limit=20`, { signal: AbortSignal.timeout(10000) }),
@@ -1238,6 +1574,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
           authFetch(`${proxyBase(deploymentId)}/cmd/settings`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/pipeline`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/scrapers`, { signal: AbortSignal.timeout(10000) }),
         ]);
       if (schedRes.ok) {
         const j = (await schedRes.json()) as { schedules: OpSchedule[]; paused: boolean };
@@ -1272,6 +1609,10 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
         const j = (await campaignRes.json()) as Campaign;
         setTestRecipient(j.testRecipient ?? "");
         setTestModeOn(j.testMode === true);
+      }
+      if (scrapersRes.ok) {
+        const j = (await scrapersRes.json()) as { scrapers: ScraperEntry[] };
+        setScrapers(j.scrapers ?? []);
       }
     } catch (err) {
       if (!quiet) setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
@@ -1482,7 +1823,20 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
         icon={<BrainCircuit className="size-4" />}
         subtitle="What the crawl hunts — ICP, countries and discovery dorks per vertical. A vertical is config, not code: add one and the next crawl runs it."
       >
-        <VerticalsPanel deploymentId={deploymentId} onRunVertical={(id) => runNow("crawl", { verticalId: id })} />
+        <VerticalsPanel
+          deploymentId={deploymentId}
+          onRunVertical={(id) => runNow("crawl", { verticalId: id })}
+          customSources={scrapers ?? undefined}
+        />
+      </Panel>
+
+      {/* ── Scraper Builder (extend discovery with AI-written sources) ── */}
+      <Panel
+        title="Scraper Builder"
+        icon={<Wand2 className="size-4" />}
+        subtitle="No source for a niche? Describe where to find the companies and the AI writes a sandboxed scraper module. Smoke-test it against a vertical, review the code, and register it — it becomes a selectable source everywhere."
+      >
+        <ScraperBuilderPanel deploymentId={deploymentId} registered={scrapers} onChanged={() => loadAll(true)} />
       </Panel>
 
       {/* ── Schedules ──────────────────────────────────────── */}
