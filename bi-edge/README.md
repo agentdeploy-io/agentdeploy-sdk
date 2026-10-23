@@ -98,6 +98,15 @@ the UI (Operations → Verticals):
   the core's behavior pipeline.
 - `DELETE /cmd/verticals?id=<id>` — remove.
 
+**Source smoke test** (UI “Test” button) — run one discovery source for a
+vertical *without* verify/enrich/sync, and preview the candidates it would
+feed the pipeline:
+
+- `POST /cmd/sources/test {vertical | verticalId, source}` → `{taskId}`.
+  `vertical` is the live (possibly unsaved) pack; `verticalId` resolves a
+  stored one. Thin proxy to the core, so the Workers 30s cap is never hit.
+- `GET /cmd/sources/test/:id` → `{state: running|done|failed, candidates?}`.
+
 `POST /cmd/schedules/crawl/run {"verticalId":"…"}` pins a vertical for a
 manual run; the **cron** always uses the *default* vertical, and with none
 configured it falls back to the legacy registry harvest (`countries`

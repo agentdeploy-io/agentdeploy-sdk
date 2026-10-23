@@ -468,8 +468,34 @@ interface Vertical {
   perCountryLimit: number;
   sources?: string[];
   probes?: string[];
+  ccFilters?: string[];
+  githubTopics?: string[];
+  urlscanQueries?: string[];
+  defillamaChains?: string[];
+  registryWindowMonths?: number;
   isDefault: boolean;
 }
+
+interface SourceMeta {
+  id: string;
+  label: string;
+  hint: string;
+}
+
+const SOURCE_META: SourceMeta[] = [
+  { id: "dorks", label: "dorks", hint: "search stack — Brave → URLScan/DDG/Bing → LLM judge" },
+  { id: "registry", label: "registry", hint: "Companies House / SIRENE / CRO harvest + website link" },
+  { id: "commoncrawl", label: "commoncrawl", hint: "CC index URL mining (regex filters)" },
+  { id: "github", label: "github", hint: "repo topics → deployed homepage URLs" },
+  { id: "urlscan", label: "urlscan", hint: "raw URLScan search queries" },
+  { id: "defillama", label: "defillama", hint: "DeFi protocols by chain (crypto verticals)" },
+];
+
+const PROBE_META: SourceMeta[] = [
+  { id: "monetization", label: "monetization", hint: "payment infra / pricing signals" },
+  { id: "techstack", label: "techstack", hint: "builder & platform detection (webflow, lovable…)" },
+  { id: "intent", label: "intent", hint: "Wayback recency + OpenPageRank authority" },
+];
 
 function VerticalsPanel({
   deploymentId,
@@ -484,6 +510,9 @@ function VerticalsPanel({
   const [saving, setSaving] = React.useState(false);
   const [running, setRunning] = React.useState(false);
   const [form, setForm] = React.useState<Record<string, string>>({});
+  const [sourcesSel, setSourcesSel] = React.useState<string[]>(["dorks"]);
+  const [probesSel, setProbesSel] = React.useState<string[]>(["monetization", "techstack"]);
+  const [test, setTest] = React.useState<{ source: string; taskId: string; state: "running" | "done" | "failed"; candidates?: Array<{ name: string; website?: string; description?: string }>; error?: string } | null>(null);
 
   const load = React.useCallback(async () => {
     setError(null);
@@ -509,6 +538,9 @@ function VerticalsPanel({
 
   const select = (v: Vertical | null) => {
     setSelectedId(v?.id ?? null);
+    setTest(null);
+    setSourcesSel(v ? v.sources?.length ? v.sources : ["dorks"] : ["dorks"]);
+    setProbesSel(v ? v.probes?.length ? v.probes : ["monetization", "techstack"] : ["monetization", "techstack"]);
     setForm(
       v
         ? {
@@ -525,8 +557,11 @@ function VerticalsPanel({
             useRegistry: String(v.useRegistry),
             llmEnrich: String(v.llmEnrich),
             mxGuess: String(v.mxGuess),
-            sources: (v.sources ?? ["dorks"]).join(", "),
-            probes: (v.probes ?? ["monetization", "techstack"]).join(", "),
+            ccFilters: (v.ccFilters ?? []).join("\n"),
+            githubTopics: (v.githubTopics ?? []).join(", "),
+            urlscanQueries: (v.urlscanQueries ?? []).join("\n"),
+            defillamaChains: (v.defillamaChains ?? []).join(", "),
+            registryWindowMonths: v.registryWindowMonths != null ? String(v.registryWindowMonths) : "",
             isDefault: String(v.isDefault),
           }
         : {
@@ -543,8 +578,11 @@ function VerticalsPanel({
             useRegistry: "true",
             llmEnrich: "true",
             mxGuess: "true",
-            sources: "dorks",
-            probes: "monetization, techstack",
+            ccFilters: "",
+            githubTopics: "",
+            urlscanQueries: "",
+            defillamaChains: "",
+            registryWindowMonths: "",
             isDefault: "false",
           },
     );
@@ -571,8 +609,13 @@ function VerticalsPanel({
         useRegistry: form.useRegistry === "true",
         llmEnrich: form.llmEnrich === "true",
         mxGuess: form.mxGuess === "true",
-        sources: (form.sources ?? "dorks").split(",").map((s) => s.trim()).filter(Boolean),
-        probes: (form.probes ?? "monetization, techstack").split(",").map((s) => s.trim()).filter(Boolean),
+        sources: sourcesSel,
+        probes: probesSel,
+        ccFilters: (form.ccFilters ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        githubTopics: (form.githubTopics ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        urlscanQueries: (form.urlscanQueries ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        defillamaChains: (form.defillamaChains ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        registryWindowMonths: form.registryWindowMonths ? Number(form.registryWindowMonths) : undefined,
         isDefault: form.isDefault === "true",
       };
       const res = await authFetch(`${proxyBase(deploymentId)}/cmd/verticals`, {
@@ -622,6 +665,73 @@ function VerticalsPanel({
       setRunning(false);
     }
   };
+
+  // Smoke-test one discovery source against the CURRENT form (unsaved), so the
+  // operator previews what a source will feed the pipeline before committing.
+  const testSource = async (source: string) => {
+    const verticalId = selected?.id;
+    setTest({ source, taskId: "", state: "running" });
+    try {
+      // Build a throwaway pack from the live form so unsaved edits are tested.
+      const pack = {
+        id: verticalId ?? "preview",
+        name: (form.name ?? "").trim() || "preview",
+        icp: (form.icp ?? "").trim(),
+        countries: (form.countries ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        dorks: (form.dorks ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        cities: (form.cities ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        sicInclude: (form.sicInclude ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        sicExclude: (form.sicExclude ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        minScore: Number(form.minScore ?? 50),
+        perCountryLimit: Number(form.perCountryLimit ?? 20),
+        ccFilters: (form.ccFilters ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        githubTopics: (form.githubTopics ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        urlscanQueries: (form.urlscanQueries ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        defillamaChains: (form.defillamaChains ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+        registryWindowMonths: form.registryWindowMonths ? Number(form.registryWindowMonths) : undefined,
+      };
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/sources/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vertical: pack, source }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const j = (await res.json()) as { taskId?: string; error?: string };
+      if (!res.ok || !j.taskId) throw new Error(j.error ?? `${res.status}`);
+      setTest((t) => (t && t.source === source ? { ...t, taskId: j.taskId! } : t));
+    } catch (err) {
+      setTest({ source, taskId: "", state: "failed", error: err instanceof Error ? err.message : "Unknown error" });
+    }
+  };
+
+  // Poll the source test until it finishes (core does the work async).
+  React.useEffect(() => {
+    if (!test || test.state !== "running" || !test.taskId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await authFetch(`${proxyBase(deploymentId)}/cmd/sources/test/${test.taskId}`, {
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!res.ok) throw new Error(`${res.status}`);
+        const j = (await res.json()) as { state: "running" | "done" | "failed"; candidates?: Array<{ name: string; website?: string; description?: string }>; error?: string };
+        if (cancelled) return;
+        if (j.state === "running") {
+          setTimeout(poll, 2000);
+        } else {
+          setTest((t) => (t && t.taskId === test.taskId ? { ...t, state: j.state, candidates: j.candidates, error: j.error } : t));
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setTest((t) => (t && t.taskId === test.taskId ? { ...t, state: "failed", error: err instanceof Error ? err.message : "poll failed" } : t));
+      }
+    };
+    const timer = setTimeout(poll, 2000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [test, deploymentId]);
 
   if (error) return <ErrorNote message={error} onRetry={load} />;
   if (verticals === null) return <Skeleton className="h-24 w-full" />;
@@ -710,18 +820,119 @@ function VerticalsPanel({
               </label>
             </div>
           </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
-              Discovery sources (comma-separated)
-              <input className={fieldCls} value={form.sources ?? ""} onChange={(e) => set("sources", e.target.value)} placeholder="dorks" />
-              <span className="text-[0.625rem] opacity-70">dorks, registry, commoncrawl, github, urlscan, defillama — registry = Companies House / SIRENE / CRO harvest + website link</span>
-            </label>
-            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
-              Enrichment probes (comma-separated)
-              <input className={fieldCls} value={form.probes ?? ""} onChange={(e) => set("probes", e.target.value)} placeholder="monetization, techstack" />
-              <span className="text-[0.625rem] opacity-70">monetization, techstack, intent (intent = Wayback + OpenPageRank)</span>
-            </label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[0.6875rem] font-medium text-muted-foreground">Discovery sources</span>
+            <div className="flex flex-col gap-1">
+              {SOURCE_META.map((s) => {
+                const on = sourcesSel.includes(s.id);
+                return (
+                  <div key={s.id} className="rounded-md border border-border px-2 py-1.5">
+                    <div className="flex items-center gap-2">
+                      <label className="flex flex-1 items-center gap-1.5 text-[0.75rem]">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={(e) => setSourcesSel((cur) => (e.target.checked ? [...cur, s.id] : cur.filter((x) => x !== s.id)))}
+                        />
+                        <span className="font-mono">{s.label}</span>
+                        <span className="text-[0.625rem] opacity-60">{s.hint}</span>
+                      </label>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[0.6875rem]"
+                        onClick={() => testSource(s.id)}
+                        disabled={test?.state === "running" && test.source === s.id}
+                      >
+                        {test?.state === "running" && test.source === s.id ? "Testing…" : "Test"}
+                      </Button>
+                    </div>
+                    {on && (
+                      <div className="mt-1.5 grid grid-cols-1 gap-2 pl-6 sm:grid-cols-2">
+                        {s.id === "commoncrawl" && (
+                          <label className="flex flex-col gap-1 text-[0.625rem] text-muted-foreground">
+                            CDX filters (one per line, optional — defaults from dorks)
+                            <Textarea className="min-h-14 font-mono text-[0.6875rem]" value={form.ccFilters ?? ""} onChange={(e) => set("ccFilters", e.target.value)} placeholder={'url:.*\\.co\\.uk.*web[-_]?design.*'} />
+                          </label>
+                        )}
+                        {s.id === "github" && (
+                          <label className="flex flex-col gap-1 text-[0.625rem] text-muted-foreground">
+                            Topics (comma-separated, optional)
+                            <input className={fieldCls} value={form.githubTopics ?? ""} onChange={(e) => set("githubTopics", e.target.value)} placeholder="web-agency, web-design" />
+                          </label>
+                        )}
+                        {s.id === "urlscan" && (
+                          <label className="flex flex-col gap-1 text-[0.625rem] text-muted-foreground">
+                            Queries (one per line, optional — defaults from dorks)
+                            <Textarea className="min-h-14 font-mono text-[0.6875rem]" value={form.urlscanQueries ?? ""} onChange={(e) => set("urlscanQueries", e.target.value)} placeholder={'domain:co.uk page.url:"web design"'} />
+                          </label>
+                        )}
+                        {s.id === "defillama" && (
+                          <label className="flex flex-col gap-1 text-[0.625rem] text-muted-foreground">
+                            Chain filter (comma-separated, optional)
+                            <input className={fieldCls} value={form.defillamaChains ?? ""} onChange={(e) => set("defillamaChains", e.target.value)} placeholder="eth, solana" />
+                          </label>
+                        )}
+                        {s.id === "registry" && (
+                          <label className="flex flex-col gap-1 text-[0.625rem] text-muted-foreground">
+                            Incorporated within (months, optional)
+                            <input className={fieldCls} value={form.registryWindowMonths ?? ""} onChange={(e) => set("registryWindowMonths", e.target.value)} inputMode="numeric" placeholder="e.g. 36" />
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[0.6875rem] font-medium text-muted-foreground">Enrichment probes</span>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {PROBE_META.map((p) => (
+                <label key={p.id} className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground" title={p.hint}>
+                  <input
+                    type="checkbox"
+                    checked={probesSel.includes(p.id)}
+                    onChange={(e) => setProbesSel((cur) => (e.target.checked ? [...cur, p.id] : cur.filter((x) => x !== p.id)))}
+                  />
+                  <span className="font-mono">{p.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          {test && (
+            <div className="rounded-md border border-border bg-surface-canvas px-2.5 py-2 text-[0.6875rem]">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="font-medium">
+                  Test: <span className="font-mono">{test.source}</span>
+                  {test.state === "running" && <span className="ml-2 opacity-70">running…</span>}
+                  {test.state === "done" && (
+                    <span className="ml-2 text-info">
+                      {test.candidates?.length ?? 0} candidates
+                    </span>
+                  )}
+                  {test.state === "failed" && <span className="ml-2 text-destructive">{test.error ?? "failed"}</span>}
+                </span>
+                <button className="text-muted-foreground hover:text-foreground" onClick={() => setTest(null)}>
+                  ✕
+                </button>
+              </div>
+              {test.state === "done" && (
+                <div className="flex max-h-44 flex-col gap-1 overflow-y-auto">
+                  {(test.candidates ?? []).length === 0 && (
+                    <p className="opacity-70">No candidates — try different dorks/ICP or another country.</p>
+                  )}
+                  {(test.candidates ?? []).map((c, i) => (
+                    <div key={i} className="flex flex-col">
+                      <span className="truncate">{c.name}</span>
+                      <span className="truncate opacity-60">{c.website ?? ""} {c.description ? `· ${c.description}` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[0.75rem] text-muted-foreground">
             {(["requireWebsite", "useRegistry", "llmEnrich", "mxGuess"] as const).map((k) => (
               <label key={k} className="flex items-center gap-1.5">

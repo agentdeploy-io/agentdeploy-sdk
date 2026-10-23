@@ -4,6 +4,18 @@ import { mastra } from "./mastra/index.js";
 import { getCrawlProgress } from "./mastra/workflows/crawl.js";
 import { installFetchTimeout } from "./http.js";
 import { closeBrowser } from "./pipeline/renderer.js";
+import {
+  discoverCommonCrawl,
+  discoverDefiLlama,
+  discoverGithub,
+  discoverRegistry,
+  discoverUrlScan,
+  hitsToCandidates,
+} from "./pipeline/sources.js";
+import { discoverDorks } from "./pipeline/behaviors.js";
+import { pipelineSearch } from "./pipeline/search.js";
+import { normalizePack } from "./pipeline/run.js";
+import { emptyDrops, emptyStats, type Candidate } from "./pipeline/types.js";
 import type { CoreMessage } from "ai";
 
 // Dev convenience: load packages/bi-core/.env when present. Variables already
@@ -38,6 +50,20 @@ interface TaskState {
 
 const tasks = new Map<string, TaskState>();
 let seq = 0;
+
+// Source smoke tests: run one discovery source for a vertical WITHOUT the
+// verify/enrich/sync stages, so the operator can preview what a source will
+// feed the pipeline before a full crawl.
+interface SourceTest {
+  id: string;
+  source: string;
+  state: "running" | "done" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+  candidates?: Candidate[];
+  error?: string;
+}
+const sourceTests = new Map<string, SourceTest>();
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -142,6 +168,72 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
           result: t.state === "succeeded" ? (t.result as { result?: unknown } | undefined)?.result : undefined,
         })),
     });
+  }
+
+  // ── Source smoke tests (UI "Test source") ────────────────────────────────
+  //   POST /v1/sources/test {vertical, source} → 202 {taskId}
+  //   GET  /v1/sources/test/:id → {state, candidates?, error?}
+  if (req.method === "GET" && p.startsWith("/v1/sources/test/")) {
+    const id = p.slice("/v1/sources/test/".length);
+    const t = sourceTests.get(id);
+    if (!t) return json(res, 404, { error: "not found" });
+    return json(res, 200, t);
+  }
+
+  if (req.method === "POST" && p === "/v1/sources/test") {
+    let body: { vertical?: Record<string, unknown>; source?: string } = {};
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      return json(res, 400, { error: "invalid json" });
+    }
+    if (!body.vertical || typeof body.vertical !== "object" || typeof body.source !== "string") {
+      return json(res, 400, { error: "vertical and source required" });
+    }
+    const source = body.source;
+    const vertical = body.vertical;
+    seq += 1;
+    const test: SourceTest = { id: `srctest-${seq}`, source, state: "running", startedAt: new Date().toISOString() };
+    sourceTests.set(test.id, test);
+    if (sourceTests.size > 20) {
+      const oldest = [...sourceTests.keys()][0];
+      if (oldest) sourceTests.delete(oldest);
+    }
+    void (async () => {
+      try {
+        const pack = normalizePack(vertical as Parameters<typeof normalizePack>[0]);
+        const country = pack.countries[0] ?? "uk";
+        const env = { ...process.env } as Record<string, string>;
+        const search = (query: string) => pipelineSearch(query, pack, env);
+        const ctx = { pack, country, env, search, limit: pack.perCountryLimit, drops: emptyDrops() };
+        let candidates: Candidate[] = [];
+        if (source === "dorks") {
+          candidates = await discoverDorks({ pack, country, env, search, limit: pack.perCountryLimit, drops: ctx.drops }, emptyStats());
+        } else if (source === "registry") {
+          candidates = await discoverRegistry(ctx);
+        } else if (source === "commoncrawl") {
+          candidates = hitsToCandidates(country, await discoverCommonCrawl(ctx), source);
+        } else if (source === "github") {
+          candidates = hitsToCandidates(country, await discoverGithub(ctx), source);
+        } else if (source === "urlscan") {
+          candidates = hitsToCandidates(country, await discoverUrlScan(ctx), source);
+        } else if (source === "defillama") {
+          candidates = hitsToCandidates(country, await discoverDefiLlama(ctx), source);
+        } else {
+          test.state = "failed";
+          test.error = `unknown source: ${source}`;
+          return;
+        }
+        test.candidates = candidates.slice(0, 25);
+        test.state = "done";
+      } catch (e) {
+        test.state = "failed";
+        test.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        test.finishedAt = new Date().toISOString();
+      }
+    })();
+    return json(res, 202, { taskId: test.id });
   }
 
   // Contract used by bi-edge's crawl cron (src/cron/crawl.ts):

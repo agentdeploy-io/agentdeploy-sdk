@@ -206,6 +206,7 @@ export class BiEdgeAgent {
           "GET /cmd/pipeline",
           "GET /cmd/crawl-status",
           "GET|POST|DELETE /cmd/verticals",
+          "POST /cmd/sources/test · GET /cmd/sources/test/:id",
           "GET /cmd/replies",
           "GET /cmd/sent",
           "GET|POST /cmd/schedules",
@@ -247,6 +248,10 @@ export class BiEdgeAgent {
 
     if (url.pathname === "/cmd/verticals" || url.pathname.startsWith("/cmd/verticals/")) {
       return withCors(await this.handleVerticals(request, db));
+    }
+
+    if (url.pathname === "/cmd/sources/test" || url.pathname.startsWith("/cmd/sources/test/")) {
+      return withCors(await this.handleSourceTest(request, env, db));
     }
 
     if (url.pathname === "/cmd/settings") {
@@ -572,6 +577,70 @@ export class BiEdgeAgent {
     } catch (e: any) {
       return json({ available: false, error: e.message ?? "unreachable" });
     }
+  }
+
+  /**
+   * POST /cmd/sources/test {verticalId, source} — run one discovery source for
+   *   the vertical (no verify/enrich/sync) and return a core task id.
+   * GET /cmd/sources/test/:id — poll the test's state + candidate preview.
+   * Thin proxies: the core does the work, both hops are fast (Workers 30s cap).
+   */
+  private async handleSourceTest(request: Request, env: Record<string, unknown>, db: CfSqlDatabase): Promise<Response> {
+    const coreUrl = String(env.CORE_URL ?? "").replace(/\/$/, "");
+    if (!coreUrl) return json({ error: "CORE_URL not configured" }, 503);
+    const pathname = new URL(request.url).pathname;
+
+    if (request.method === "POST" && pathname === "/cmd/sources/test") {
+      let body: { verticalId?: string; vertical?: Record<string, unknown>; source?: string } = {};
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "Invalid JSON" }, 400);
+      }
+      if (!body.source) return json({ error: "source required" }, 400);
+      // Accept a live pack (unsaved preview) or a stored vertical id.
+      const vertical =
+        body.vertical && typeof body.vertical === "object"
+          ? body.vertical
+          : body.verticalId
+            ? (getVertical(db as any, body.verticalId) as unknown as Record<string, unknown>)
+            : null;
+      if (!vertical) return json({ error: "vertical (pack) or verticalId required" }, 400);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 10_000);
+      try {
+        const res = await fetch(`${coreUrl}/v1/sources/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vertical, source: body.source }),
+          signal: ctrl.signal,
+        });
+        const data = (await res.json()) as { taskId?: string };
+        if (!res.ok || !data.taskId) return json({ error: `core ${res.status}` }, 502);
+        return json({ taskId: data.taskId });
+      } catch (e) {
+        return json({ error: `core unreachable: ${(e as Error).message}` }, 502);
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    const m = pathname.match(/^\/cmd\/sources\/test\/([^/]+)$/);
+    if (request.method === "GET" && m) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5_000);
+      try {
+        const res = await fetch(`${coreUrl}/v1/sources/test/${m[1]}`, { signal: ctrl.signal });
+        if (!res.ok) return json({ error: `core ${res.status}` }, res.status === 404 ? 404 : 502);
+        return json((await res.json()) as object);
+      } catch (e) {
+        return json({ error: `core unreachable: ${(e as Error).message}` }, 502);
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    return json({ error: "Method not allowed" }, 405);
   }
 
   /**
