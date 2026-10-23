@@ -140,6 +140,7 @@ export async function crawlCron(
                   githubTopics: vertical.githubTopics,
                   urlscanQueries: vertical.urlscanQueries,
                   defillamaChains: vertical.defillamaChains,
+                  registryWindowMonths: vertical.registryWindowMonths,
                 },
               }
             : {}),

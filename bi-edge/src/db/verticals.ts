@@ -21,6 +21,7 @@ export interface VerticalConfig {
   githubTopics?: string[];
   urlscanQueries?: string[];
   defillamaChains?: string[];
+  registryWindowMonths?: number;
 }
 
 export interface Vertical extends VerticalConfig {
@@ -70,6 +71,7 @@ function toVertical(row: Row): Vertical {
     githubTopics: cfg.githubTopics,
     urlscanQueries: cfg.urlscanQueries,
     defillamaChains: cfg.defillamaChains,
+    registryWindowMonths: cfg.registryWindowMonths,
     isDefault: row.is_default === 1,
     createdAt: row.created_at ?? undefined,
     updatedAt: row.updated_at ?? undefined,
@@ -77,8 +79,8 @@ function toVertical(row: Row): Vertical {
 }
 
 function configJson(v: Vertical): string {
-  const { icp, countries, dorks, cities, sicInclude, sicExclude, requireWebsite, useRegistry, llmEnrich, mxGuess, minScore, perCountryLimit, sources, probes, ccFilters, githubTopics, urlscanQueries, defillamaChains } = v;
-  return JSON.stringify({ icp, countries, dorks, cities, sicInclude, sicExclude, requireWebsite, useRegistry, llmEnrich, mxGuess, minScore, perCountryLimit, sources, probes, ccFilters, githubTopics, urlscanQueries, defillamaChains });
+  const { icp, countries, dorks, cities, sicInclude, sicExclude, requireWebsite, useRegistry, llmEnrich, mxGuess, minScore, perCountryLimit, sources, probes, ccFilters, githubTopics, urlscanQueries, defillamaChains, registryWindowMonths } = v;
+  return JSON.stringify({ icp, countries, dorks, cities, sicInclude, sicExclude, requireWebsite, useRegistry, llmEnrich, mxGuess, minScore, perCountryLimit, sources, probes, ccFilters, githubTopics, urlscanQueries, defillamaChains, registryWindowMonths });
 }
 
 export function listVerticals(db: Database.Database): Vertical[] {

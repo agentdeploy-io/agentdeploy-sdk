@@ -123,7 +123,7 @@ registry harvest:
 
 ```
 discover  configured sources (default: dorks) merged + deduped by host:
-          dorks · commoncrawl · github · urlscan · defillama
+          dorks · registry · commoncrawl · github · urlscan · defillama
 verify    Companies House name search (UK): dissolved / SIC-excluded → drop
           website name-match signals (URL sources: miss = flagged, not
           rejected — the site IS the entity; only registry-confirmed names
@@ -155,6 +155,17 @@ from agent-recon). A vertical selects which run — `sources: ["dorks",
 Sources are merged and deduped by host into one candidate pool capped at
 `perCountryLimit`; any source that fails is skipped, never fatal.
 
+- **registry** — the companies registries as a *discovery* source, not just a
+  verify step: **UK** Companies House `search/companies?q=` (free-text works;
+  `sic=`/`address=` filters are broken server-side) with ICP phrases from the
+  dorks + city variants, active-only, then a detail fetch per company for SIC
+  + locality (SIC-exclude gate, optional `registryWindowMonths` recency
+  window). **FR** recherche-entreprises/SIRENE, **IE** CRO open-data CSV
+  (cached 7 days), **EE** ariregister, **PT** brave `site:.pt`. Registry hits
+  have no website, so a **link step** finds one: LLM-guessed domain (fetch +
+  name-token confirmation) → exact-name search → quoted core-name search. A
+  wrong link is harmless: registry candidates are name-confirmed, so the
+  verify stage rejects mismatches (`website_unverified`).
 - **dorks** — the search stack above (Brave → URLScan/DDG/Bing → LLM judge).
 - **commoncrawl** — latest CC index `collinfo.json` + CDX regex filters
   (defaults: dork phrases as path slugs under the country TLD).

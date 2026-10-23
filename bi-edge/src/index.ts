@@ -620,6 +620,7 @@ export class BiEdgeAgent {
         githubTopics: Array.isArray(body.githubTopics) ? body.githubTopics.map(String) : undefined,
         urlscanQueries: Array.isArray(body.urlscanQueries) ? body.urlscanQueries.map(String) : undefined,
         defillamaChains: Array.isArray(body.defillamaChains) ? body.defillamaChains.map(String) : undefined,
+        registryWindowMonths: typeof body.registryWindowMonths === "number" ? body.registryWindowMonths : undefined,
         isDefault: body.isDefault ?? false,
       };
       if (vertical.countries.length === 0) {

@@ -23,6 +23,7 @@ import {
   discoverCommonCrawl,
   discoverDefiLlama,
   discoverGithub,
+  discoverRegistry,
   discoverUrlScan,
   fetchOpenPageRank,
   fetchWayback,
@@ -89,6 +90,7 @@ export function normalizePack(raw: Partial<VerticalPack> & { id: string; name: s
     githubTopics: raw.githubTopics,
     urlscanQueries: raw.urlscanQueries,
     defillamaChains: raw.defillamaChains,
+    registryWindowMonths: raw.registryWindowMonths,
   };
 }
 
@@ -133,6 +135,8 @@ export async function runVerticalPack(
       try {
         if (src === "dorks") {
           batch = await discoverDorks({ pack, country, env, search, limit, drops }, stats);
+        } else if (src === "registry") {
+          batch = await discoverRegistry({ pack, country, env, search, limit, drops });
         } else {
           const fn =
             src === "commoncrawl" ? discoverCommonCrawl :

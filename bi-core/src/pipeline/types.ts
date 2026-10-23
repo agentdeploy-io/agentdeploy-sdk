@@ -86,6 +86,8 @@ export interface VerticalPack {
   urlscanQueries?: string[];
   /** DefiLlama chain filter (DeFi verticals). */
   defillamaChains?: string[];
+  /** Registry source: only companies incorporated within the last N months. */
+  registryWindowMonths?: number;
 }
 
 export type Stage = "discover" | "verify" | "enrich" | "sync";

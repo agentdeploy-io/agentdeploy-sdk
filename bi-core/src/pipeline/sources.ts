@@ -5,8 +5,11 @@
 
 import type { Candidate, DiscoverCtx, SearchHit, VerticalPack } from "./types.js";
 import { dorkPhrases, urlscanSearch } from "./search.js";
+import { fetchPageContent } from "./page.js";
+import { llmConfigured, llmJson } from "./llm.js";
+import { harvestEE, harvestIE, harvestPT } from "../mastra/workflows/registry-intake.js";
 
-export const SOURCE_IDS = ["dorks", "commoncrawl", "github", "urlscan", "defillama"] as const;
+export const SOURCE_IDS = ["dorks", "commoncrawl", "github", "urlscan", "defillama", "registry"] as const;
 export const PROBE_IDS = ["monetization", "techstack", "intent"] as const;
 
 export function sourceList(pack: VerticalPack): string[] {
@@ -303,6 +306,279 @@ export function intentSummary(wb: WaybackInfo, opr?: OprInfo): string {
     ((opr?.referringDomains ?? 0) >= 10 ? 9 : 0);
   const tier = score >= 40 ? "HIGH" : score >= 20 ? "MEDIUM" : "LOW";
   return `intent: ${tier} — ${parts.join(", ")}`;
+}
+
+// ── Companies-registry discovery ────────────────────────────────────────────
+// The registry is a discovery source, not just a verify step. Live-verified:
+// CH `/search/companies?q=` works (paginated, 20/page) while `advanced-search`,
+// `sic=` and `address=` filters return 0/broken. Listing items omit SIC and
+// locality, so a per-company detail fetch fills those in. Registry hits have
+// no website — the link step finds one via the search stack or the candidate
+// is dropped (no_website), respecting requireWebsite.
+
+interface RegistryCompany {
+  name: string;
+  regNumber: string;
+  sic?: string;
+  city?: string;
+  incorporated?: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  website?: string;
+}
+
+const NON_SITE_HOST =
+  /(facebook\.com|linkedin\.com|instagram\.com|twitter\.com|x\.com|youtube\.com|tiktok\.com|glassdoor\.|yell\.com|192\.com|cylex\.|thomsonlocal|bark\.com|foursquare|wikipedia\.org|find-and-update\.company-information|companieshouse\.gov|service\.gov\.uk|maps\.google|yelp\.|trustpilot\.|craigslist\.|gov\.uk|in\.gov\.fr)/i;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function chSearch(query: string, apiKey: string, page = 1): Promise<Array<{ company_number: string; title?: string; company_status?: string; date_of_creation?: string }>> {
+  const basic = Buffer.from(`${apiKey}:`).toString("base64");
+  const res = await fetch(
+    `https://api.companieshouse.gov.uk/search/companies?q=${encodeURIComponent(query)}&size=20&page=${page}`,
+    { headers: { Accept: "application/json", Authorization: `Basic ${basic}` }, signal: AbortSignal.timeout(20_000) },
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as { items?: Array<{ company_number: string; title?: string; company_status?: string; date_of_creation?: string }> };
+  return data.items ?? [];
+}
+
+async function chDetail(regNumber: string, apiKey: string): Promise<{ sic?: string; city?: string } | null> {
+  const basic = Buffer.from(`${apiKey}:`).toString("base64");
+  try {
+    const res = await fetch(`https://api.companieshouse.gov.uk/company/${regNumber}`, {
+      headers: { Accept: "application/json", Authorization: `Basic ${basic}` },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) return null;
+    const d = (await res.json()) as { sic_codes?: string[]; registered_office_address?: { locality?: string } };
+    return { sic: d.sic_codes?.[0], city: d.registered_office_address?.locality };
+  } catch {
+    return null;
+  }
+}
+
+async function harvestUKRegistry(pack: VerticalPack, env: Record<string, string>, max: number): Promise<RegistryCompany[]> {
+  const key = env.COMPANIES_HOUSE_KEY ?? "";
+  if (!key) return [];
+  const phrases = (pack.dorks ?? []).flatMap((d) => dorkPhrases(d));
+  const queries = new Set<string>();
+  for (const p of phrases.slice(0, 3)) queries.add(p);
+  for (const p of phrases.slice(0, 2)) for (const c of (pack.cities ?? []).slice(0, 3)) queries.add(`${p} ${c}`);
+
+  const found = new Map<string, RegistryCompany>();
+  for (const q of [...queries].slice(0, 8)) {
+    if (found.size >= max) break;
+    for (const page of [1, 2]) {
+      const items = await chSearch(q, key, page);
+      if (items.length === 0) break;
+      for (const it of items) {
+        if ((it.company_status ?? "") !== "active") continue;
+        const name = (it.title ?? "").trim();
+        if (name.length < 4 || found.has(it.company_number)) continue;
+        found.set(it.company_number, {
+          name,
+          regNumber: it.company_number,
+          incorporated: it.date_of_creation,
+          sourceLabel: "companieshouse.gov.uk",
+          sourceUrl: `https://find-and-update.company-information.service.gov.uk/company/${it.company_number}`,
+        });
+        if (found.size >= max) break;
+      }
+      await sleep(150);
+      if (found.size >= max) break;
+    }
+  }
+
+  // SIC + locality are not in the listing — detail-fetch the companies we'll
+  // actually keep (budgeted to `max`, paced).
+  const windowMonths = pack.registryWindowMonths;
+  const cutoff = windowMonths ? new Date(Date.now() - windowMonths * 30.44 * 86_400_000).toISOString().slice(0, 10) : null;
+  const kept: RegistryCompany[] = [];
+  const list = [...found.values()];
+  for (let i = 0; i < list.length && i < max; i++) {
+    const co = list[i]!;
+    if (cutoff && co.incorporated && co.incorporated < cutoff) continue;
+    const detail = await chDetail(co.regNumber, key);
+    if (detail?.sic) co.sic = detail.sic;
+    if (detail?.city) co.city = detail.city;
+    const excluded = (pack.sicExclude ?? []).some((p) => (co.sic ?? "").startsWith(p));
+    if (excluded) continue;
+    kept.push(co);
+    await sleep(120);
+  }
+  return kept;
+}
+
+async function harvestFRRegistry(pack: VerticalPack, max: number): Promise<RegistryCompany[]> {
+  const phrases = (pack.dorks ?? []).flatMap((d) => dorkPhrases(d));
+  const q = phrases[0] ?? "agence web";
+  const naf = (pack.sicInclude ?? []).map((s) => s.replace(/\D/g, "")).filter(Boolean);
+  const url = `https://recherche-entreprises.api.gouv.fr/search?q=${encodeURIComponent(q)}&per_page=${Math.min(max, 25)}&etat_administratif=A${naf[0] ? `&activite_principale=${naf[0]}` : ""}`;
+  try {
+    const res = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      results?: Array<{
+        siren: string;
+        nom_complet?: string;
+        nom_raison_sociale?: string;
+        activite_principale?: string;
+        date_creation?: string;
+        date_fermeture?: string | null;
+        siege?: { libelle_commune?: string };
+      }>;
+    };
+    return (data.results ?? [])
+      .filter((r) => r.date_fermeture == null)
+      .map((r) => ({
+        name: (r.nom_complet || r.nom_raison_sociale || `SIREN ${r.siren}`).trim(),
+        regNumber: r.siren,
+        sic: r.activite_principale,
+        city: r.siege?.libelle_commune,
+        incorporated: r.date_creation,
+        sourceLabel: "recherche-entreprises.api.gouv.fr",
+        sourceUrl: `https://www.insee.fr/fr/recherche/sirene/${r.siren}`,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Find the company's own website via the search stack. Ladder: exact
+ * registered name → quoted core name (+city) → unquoted core name. A wrong
+ * site is not a problem here — the verify stage re-checks the name against
+ * the page and drops mismatches (registry candidates are name-confirmed).
+ */
+async function linkWebsite(ctx: DiscoverCtx, co: RegistryCompany): Promise<string | null> {
+  const tld = COUNTRY_TLD[ctx.country] ?? "";
+  const sitePart = ["uk", "fr", "ie", "pt"].includes(ctx.country) && tld ? ` site:${tld}` : "";
+  const core = co.name
+    .replace(/\b(limited|ltd|llp|plc|inc|co\b|company|group|sarl|s\.a\.|gmbh|oy|ou)\b\.?/gi, " ")
+    .replace(/[.,]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  // First rung (highest precision): ask the LLM for the most plausible domain,
+  // fetch it, and confirm the company's name tokens appear on the page.
+  const guessed = await llmGuessWebsite(ctx, co);
+  if (guessed) return guessed;
+
+  // Search ladder: exact registered name, then quoted core name (+city).
+  // (The unquoted core-name query returns too many near-miss sites, so it is
+  // deliberately omitted — the verify gate would just reject them.)
+  const queries = [
+    `"${co.name}"${sitePart}`,
+    `"${core}"${co.city ? ` ${co.city}` : ""}${sitePart}`,
+  ];
+  for (const q of queries) {
+    const outcome = await ctx.search(q);
+    for (const h of outcome.hits) {
+      try {
+        const host = new URL(h.url).hostname.replace(/^www\./, "").toLowerCase();
+        if (!host || NON_SITE_HOST.test(host) || NOISE_HOST.test(host)) continue;
+        return `https://${host}/`;
+      } catch {
+        /* bad url */
+      }
+    }
+  }
+  return null;
+}
+
+async function llmGuessWebsite(ctx: DiscoverCtx, co: RegistryCompany): Promise<string | null> {
+  if (!llmConfigured(ctx.env)) return null;
+  const res = await llmJson<{ url: string | null }>(ctx.env,
+    "You infer the single most likely company website URL from its registered name, city and SIC code. " +
+    "Return JSON: {\"url\": \"https://...\"} or {\"url\": null} if none is plausible. " +
+    "It must be a real registered-domain homepage the company would own — never a directory, search engine, or social profile.",
+    `Company: ${co.name}\nCity: ${co.city ?? "unknown"}\nSIC: ${co.sic ?? "unknown"}\nCountry: ${ctx.country}`,
+  );
+  const url = res.data?.url;
+  if (!url) return null;
+  let u: URL;
+  try {
+    u = new URL(url.startsWith("http") ? url : `https://${url}`);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.replace(/^www\./, "").toLowerCase();
+  if (!host || NON_SITE_HOST.test(host) || NOISE_HOST.test(host)) return null;
+  const page = await fetchPageContent(`https://${host}/`);
+  if (!page) return null;
+  const tokens = co.name
+    .replace(/\b(limited|ltd|llp|plc|inc|company|group|sarl|gmbh|oy|ou)\b\.?/gi, " ")
+    .split(/\s+/)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length > 3);
+  if (tokens.length > 0) {
+    const lower = page.text.toLowerCase();
+    if (!tokens.some((t) => lower.includes(t))) return null; // not their site
+  }
+  return `https://${host}/`;
+}
+
+export async function discoverRegistry(ctx: DiscoverCtx): Promise<Candidate[]> {
+  const { pack, country, env } = ctx;
+  const limit = pack.perCountryLimit ?? 20;
+  const max = Math.min(limit * 2, 40);
+
+  let companies: RegistryCompany[] = [];
+  if (country === "uk") {
+    companies = await harvestUKRegistry(pack, env, max);
+  } else if (country === "fr") {
+    companies = await harvestFRRegistry(pack, max);
+  } else if (country === "ie") {
+    const legacy = await harvestIE({ dataDir: env.DATA_DIR ?? "/tmp", limit: max }).catch(() => []);
+    companies = legacy.map((c) => ({ name: c.name, regNumber: c.reg_number ?? "", sic: c.sic, city: c.city, incorporated: c.incorporated, sourceLabel: "opendata.cro.ie", sourceUrl: c.source_url ?? "", website: c.website }));
+  } else if (country === "ee") {
+    const phrases = (pack.dorks ?? []).flatMap((d) => dorkPhrases(d));
+    const legacy = await harvestEE({ query: phrases[0] ?? "võrgukontor", limit: max }).catch(() => []);
+    companies = legacy.map((c) => ({ name: c.name, regNumber: c.reg_number ?? "", city: c.city, incorporated: c.incorporated, sourceLabel: "ariregister.rik.ee", sourceUrl: c.source_url ?? "", website: c.website }));
+  } else if (country === "pt") {
+    const legacy = await harvestPT({ braveApiKey: env.BRAVE_API_KEY ?? "", limit: max }).catch(() => []);
+    companies = legacy.map((c) => ({ name: c.name, regNumber: "", city: c.city, incorporated: c.incorporated, sourceLabel: "brave-search (pt web discovery)", sourceUrl: c.source_url ?? "", website: c.website }));
+  } else {
+    return [];
+  }
+
+  const out: Candidate[] = [];
+  const seenHost = new Set<string>();
+  for (const co of companies) {
+    if (out.length >= limit) break;
+    if (!co.name || co.name.length < 4) continue;
+    // PT (and any source that already resolved a website) skips linking.
+    let website: string | undefined = co.website;
+    if (!website) {
+      if (!pack.requireWebsite) continue;
+      website = (await linkWebsite(ctx, co)) ?? undefined;
+      if (out.length < 3) console.log("[registry] link", co.name, "->", website ?? "NONE");
+      if (!website) continue; // no_website — counted via the verify stage drop
+    }
+    const host = (() => {
+      try {
+        return new URL(website).hostname.replace(/^www\./, "").toLowerCase();
+      } catch {
+        return null;
+      }
+    })();
+    if (!host || seenHost.has(host) || NON_SITE_HOST.test(host)) continue;
+    seenHost.add(host);
+    out.push({
+      key: `${country}-reg-${co.regNumber || co.name.replace(/\W/g, "").slice(0, 20)}`,
+      country,
+      name: co.name,
+      website,
+      reg_number: co.regNumber || undefined,
+      sic: co.sic,
+      incorporated: co.incorporated,
+      city: co.city,
+      source: `registry:${co.sourceLabel}`,
+      source_url: co.sourceUrl,
+      via: "registry",
+    });
+  }
+  return out;
 }
 
 /** Build candidates from raw source hits (shared by all discovery sources). */

@@ -714,7 +714,7 @@ function VerticalsPanel({
             <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
               Discovery sources (comma-separated)
               <input className={fieldCls} value={form.sources ?? ""} onChange={(e) => set("sources", e.target.value)} placeholder="dorks" />
-              <span className="text-[0.625rem] opacity-70">dorks, commoncrawl, github, urlscan, defillama</span>
+              <span className="text-[0.625rem] opacity-70">dorks, registry, commoncrawl, github, urlscan, defillama — registry = Companies House / SIRENE / CRO harvest + website link</span>
             </label>
             <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
               Enrichment probes (comma-separated)
