@@ -134,6 +134,12 @@ export async function crawlCron(
                   mxGuess: vertical.mxGuess,
                   minScore: vertical.minScore,
                   perCountryLimit: vertical.perCountryLimit,
+                  sources: vertical.sources,
+                  probes: vertical.probes,
+                  ccFilters: vertical.ccFilters,
+                  githubTopics: vertical.githubTopics,
+                  urlscanQueries: vertical.urlscanQueries,
+                  defillamaChains: vertical.defillamaChains,
                 },
               }
             : {}),

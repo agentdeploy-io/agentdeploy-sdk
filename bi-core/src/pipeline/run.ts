@@ -20,6 +20,18 @@ import {
 import { pipelineSearch } from "./search.js";
 import type { SmartFetchResult } from "./renderer.js";
 import {
+  discoverCommonCrawl,
+  discoverDefiLlama,
+  discoverGithub,
+  discoverUrlScan,
+  fetchOpenPageRank,
+  fetchWayback,
+  hitsToCandidates,
+  intentSummary,
+  probeList,
+  sourceList,
+} from "./sources.js";
+import {
   emptyDrops,
   emptyStats,
   type Candidate,
@@ -28,6 +40,15 @@ import {
   type SyncedLead,
   type VerticalPack,
 } from "./types.js";
+
+function hostOf(url?: string): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
 
 export interface RunCallbacks {
   progress: (p: Progress) => void;
@@ -62,6 +83,12 @@ export function normalizePack(raw: Partial<VerticalPack> & { id: string; name: s
     mxGuess: raw.mxGuess ?? DEFAULTS.mxGuess,
     minScore: raw.minScore ?? DEFAULTS.minScore,
     perCountryLimit: raw.perCountryLimit ?? DEFAULTS.perCountryLimit,
+    sources: raw.sources,
+    probes: raw.probes,
+    ccFilters: raw.ccFilters,
+    githubTopics: raw.githubTopics,
+    urlscanQueries: raw.urlscanQueries,
+    defillamaChains: raw.defillamaChains,
   };
 }
 
@@ -95,14 +122,39 @@ export async function runVerticalPack(
   for (const country of pack.countries) {
     const limit = pack.perCountryLimit;
 
-    // ── discover ──
-    cb.progress({ stage: "discover", done: 0, total: 1, detail: `${pack.name} · ${country}: running dorks` });
-    const candidates = await discoverDorks(
-      { pack, country, env, search, limit, drops },
-      stats,
-    );
+    // ── discover (all configured sources, merged, deduped by host) ──
+    const sources = sourceList(pack);
+    const hostSeen = new Set<string>();
+    const candidates: Candidate[] = [];
+    for (let si = 0; si < sources.length; si++) {
+      const src = sources[si]!;
+      cb.progress({ stage: "discover", done: si, total: sources.length, detail: `${pack.name} · ${country}: source ${src}` });
+      let batch: Candidate[] = [];
+      try {
+        if (src === "dorks") {
+          batch = await discoverDorks({ pack, country, env, search, limit, drops }, stats);
+        } else {
+          const fn =
+            src === "commoncrawl" ? discoverCommonCrawl :
+            src === "github" ? discoverGithub :
+            src === "urlscan" ? discoverUrlScan :
+            discoverDefiLlama;
+          const hits = await fn({ pack, country, env, search, limit, drops });
+          batch = hitsToCandidates(country, hits, src);
+        }
+      } catch {
+        batch = []; // a source failing never kills the run
+      }
+      for (const c of batch) {
+        if (candidates.length >= limit) break;
+        const host = hostOf(c.website);
+        if (!host || hostSeen.has(host)) continue;
+        hostSeen.add(host);
+        candidates.push(c);
+      }
+      cb.progress({ stage: "discover", done: si + 1, total: sources.length, detail: `${pack.name} · ${country}: ${candidates.length} candidates after ${src}` });
+    }
     stats.totalCandidates += candidates.length;
-    cb.progress({ stage: "discover", done: 1, total: 1, detail: `${pack.name} · ${country}: ${candidates.length} candidates` });
     if (candidates.length === 0) {
       stats.countriesProcessed.push(country);
       continue;
@@ -141,6 +193,19 @@ export async function runVerticalPack(
     }
     stats.totalVerified += verified.length;
 
+    // Intent probe (Wayback CDX + optional OpenPageRank) is batched once per
+    // country — OPR is a single bulk call, Wayback is per-domain in the loop.
+    const probes = probeList(pack);
+    const intentOn = probes.includes("intent");
+    const oprKey = env.OPENPAGERANK_API_KEY ?? "";
+    const oprMap =
+      intentOn && oprKey && verified.length > 0
+        ? await fetchOpenPageRank(
+            verified.map((c) => hostOf(c.website)).filter((h): h is string => !!h),
+            oprKey,
+          )
+        : {};
+
     // ── enrich ──
     const leads: SyncedLead[] = [];
     for (let i = 0; i < verified.length; i++) {
@@ -158,6 +223,7 @@ export async function runVerticalPack(
       let hasLlm = false;
       let llmReason = "LLM off";
       let summary = "";
+      let intentLine = "";
 
       if (pack.llmEnrich) {
         const text = websiteChecks.get(c.key)?.text ?? "";
@@ -173,6 +239,12 @@ export async function runVerticalPack(
         }
       }
 
+      if (intentOn) {
+        const host = hostOf(c.website) ?? "";
+        const wb = await fetchWayback(host);
+        intentLine = intentSummary(wb, oprMap[host]);
+      }
+
       lead.score = scoreLead(lead, websiteChecks.get(c.key)?.verdict ?? "flagged", relevance, hasLlm, pack);
       if (lead.score < pack.minScore) {
         drops.below_min_score += 1;
@@ -185,7 +257,11 @@ export async function runVerticalPack(
         `LLM fit ${relevance}/100: ${llmReason}`,
       ].join("; ");
       lead.website_evidence = evidence || undefined;
-      lead.research = summary ? `${summary}\n\nFit: ${llmReason} (${relevance}/100)` : undefined;
+      const researchParts = [
+        summary ? `${summary}\n\nFit: ${llmReason} (${relevance}/100)` : undefined,
+        intentLine || undefined,
+      ].filter(Boolean);
+      lead.research = researchParts.length > 0 ? researchParts.join("\n\n") : undefined;
       leads.push(lead);
     }
 

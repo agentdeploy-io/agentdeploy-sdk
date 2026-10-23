@@ -74,6 +74,18 @@ export interface VerticalPack {
   mxGuess: boolean;
   minScore: number;
   perCountryLimit: number;
+  /** Discovery sources to run: dorks | commoncrawl | github | urlscan | defillama. */
+  sources?: string[];
+  /** Enrichment probes: monetization | techstack | intent. */
+  probes?: string[];
+  /** Common Crawl CDX regex filters (override the dork-derived defaults). */
+  ccFilters?: string[];
+  /** GitHub topics to mine for deployed homepages. */
+  githubTopics?: string[];
+  /** URLScan query strings (override the dork-derived defaults). */
+  urlscanQueries?: string[];
+  /** DefiLlama chain filter (DeFi verticals). */
+  defillamaChains?: string[];
 }
 
 export type Stage = "discover" | "verify" | "enrich" | "sync";

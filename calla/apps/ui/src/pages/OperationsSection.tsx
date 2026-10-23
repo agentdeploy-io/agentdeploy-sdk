@@ -466,6 +466,8 @@ interface Vertical {
   mxGuess: boolean;
   minScore: number;
   perCountryLimit: number;
+  sources?: string[];
+  probes?: string[];
   isDefault: boolean;
 }
 
@@ -523,6 +525,8 @@ function VerticalsPanel({
             useRegistry: String(v.useRegistry),
             llmEnrich: String(v.llmEnrich),
             mxGuess: String(v.mxGuess),
+            sources: (v.sources ?? ["dorks"]).join(", "),
+            probes: (v.probes ?? ["monetization", "techstack"]).join(", "),
             isDefault: String(v.isDefault),
           }
         : {
@@ -539,6 +543,8 @@ function VerticalsPanel({
             useRegistry: "true",
             llmEnrich: "true",
             mxGuess: "true",
+            sources: "dorks",
+            probes: "monetization, techstack",
             isDefault: "false",
           },
     );
@@ -565,6 +571,8 @@ function VerticalsPanel({
         useRegistry: form.useRegistry === "true",
         llmEnrich: form.llmEnrich === "true",
         mxGuess: form.mxGuess === "true",
+        sources: (form.sources ?? "dorks").split(",").map((s) => s.trim()).filter(Boolean),
+        probes: (form.probes ?? "monetization, techstack").split(",").map((s) => s.trim()).filter(Boolean),
         isDefault: form.isDefault === "true",
       };
       const res = await authFetch(`${proxyBase(deploymentId)}/cmd/verticals`, {
@@ -701,6 +709,18 @@ function VerticalsPanel({
                 <input className={fieldCls} value={form.perCountryLimit ?? ""} onChange={(e) => set("perCountryLimit", e.target.value)} inputMode="numeric" />
               </label>
             </div>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              Discovery sources (comma-separated)
+              <input className={fieldCls} value={form.sources ?? ""} onChange={(e) => set("sources", e.target.value)} placeholder="dorks" />
+              <span className="text-[0.625rem] opacity-70">dorks, commoncrawl, github, urlscan, defillama</span>
+            </label>
+            <label className="flex flex-col gap-1 text-[0.6875rem] text-muted-foreground">
+              Enrichment probes (comma-separated)
+              <input className={fieldCls} value={form.probes ?? ""} onChange={(e) => set("probes", e.target.value)} placeholder="monetization, techstack" />
+              <span className="text-[0.625rem] opacity-70">monetization, techstack, intent (intent = Wayback + OpenPageRank)</span>
+            </label>
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[0.75rem] text-muted-foreground">
             {(["requireWebsite", "useRegistry", "llmEnrich", "mxGuess"] as const).map((k) => (

@@ -122,13 +122,15 @@ behavior-driven pipeline (`src/pipeline/`) instead of the legacy
 registry harvest:
 
 ```
-discover  dorks × cities → search stack → candidates (deduped by domain)
+discover  configured sources (default: dorks) merged + deduped by host:
+          dorks · commoncrawl · github · urlscan · defillama
 verify    Companies House name search (UK): dissolved / SIC-excluded → drop
-          website name-match signals (dork sources: miss = flagged, not
-          rejected — the site IS the entity; the LLM gate filters)
+          website name-match signals (URL sources: miss = flagged, not
+          rejected — the site IS the entity; only registry-confirmed names
+          keep the strict verdict; the LLM gate does the real filtering)
 enrich    contact pages + MX validation, info@/hello@ guessing when MX ok
           LLM (DeepSeek flash via Chutes): ICP relevance 0-100, pitch
-          summary, best email/phone
+          summary, best email/phone · intent probe (Wayback + OpenPageRank)
 score     verified +40 / flagged +25 · relevance×0.3 (≤30) · email +15 ·
           phone +10 · registry match +10 · SIC-in-include +5 · cap 100
 sync      batches → engine /inbound/sync
@@ -145,6 +147,32 @@ agent-recon's payments-probe) scans the (rendered) HTML for payment
 infrastructure (stripe/paddle/lemonsqueezy/paypal/gumroad/braintree/square/
 mollie/razorpay/klarna + crypto providers), pricing-page links and
 paid-tier terms; signals land in the lead's `website_evidence`.
+
+**Discovery sources & enrichment probes** (`src/pipeline/sources.ts`, ported
+from agent-recon). A vertical selects which run — `sources: ["dorks",
+"commoncrawl", "github", "urlscan", "defillama"]` and `probes: ["monetization",
+"techstack", "intent"]` (defaults: `dorks` / `monetization, techstack`).
+Sources are merged and deduped by host into one candidate pool capped at
+`perCountryLimit`; any source that fails is skipped, never fatal.
+
+- **dorks** — the search stack above (Brave → URLScan/DDG/Bing → LLM judge).
+- **commoncrawl** — latest CC index `collinfo.json` + CDX regex filters
+  (defaults: dork phrases as path slugs under the country TLD).
+- **github** — `api.github.com/search/repositories?q=topic:<t>` → deployed
+  `homepage` URLs (default topics: web/digital/marketing agency; set
+  `githubTopics` to steer; 403/429 = rate budget spent, stop cleanly).
+- **urlscan** — raw URLScan search queries (`urlscanQueries` or dork-derived).
+- **defillama** — `api.llama.fi/protocols`, chain-filtered, TVL>0
+  (DeFi verticals; set `defillamaChains`).
+
+Probes: **monetization** + **techstack** (site builder/platform markers —
+webflow/framer/wix/squarespace/shopify/wordpress/elementor/nextjs/nuxt/
+lovable/v0/bolt/replit; signals `stack:<name>`) run on the already-fetched
+(rendered) HTML in the verify stage — zero extra network. **intent** runs in
+enrich: Wayback CDX snapshot count + recency (`active` = updated ≤90d) plus
+optional OpenPageRank authority/referring-domains when
+`OPENPAGERANK_API_KEY` is set; the tiered line lands in the lead's
+`research`.
 
 Every drop is counted by reason (`registry_sic / no_website / fetch_failed /
 website_unverified / icp_mismatch / below_min_score / budget / duplicate`)

@@ -89,8 +89,13 @@ the UI (Operations → Verticals):
 - `GET /cmd/verticals` — list all packs.
 - `POST /cmd/verticals` — create/update (`{name, icp, countries, dorks,
   cities?, sicInclude?, sicExclude?, requireWebsite, useRegistry, llmEnrich,
-  mxGuess, minScore, perCountryLimit, isDefault}`; `id` generated when
-  absent). Only one `isDefault` at a time.
+  mxGuess, minScore, perCountryLimit, sources?, probes?, ccFilters?,
+  githubTopics?, urlscanQueries?, defillamaChains?, isDefault}`; `id`
+  generated when absent). Only one `isDefault` at a time. `sources` selects
+  discovery sources (`dorks` / `commoncrawl` / `github` / `urlscan` /
+  `defillama`, default `dorks`) and `probes` selects enrichment probes
+  (`monetization` / `techstack` / `intent`); both flow through the handoff to
+  the core's behavior pipeline.
 - `DELETE /cmd/verticals?id=<id>` — remove.
 
 `POST /cmd/schedules/crawl/run {"verticalId":"…"}` pins a vertical for a

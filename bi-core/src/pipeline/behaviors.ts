@@ -7,6 +7,7 @@ import { verify, type PageContent, type RegistryInfo } from "../verification.js"
 import { extractContacts, validateMxRecords, CONTACT_PATHS } from "../extraction.js";
 import { fetchPageContent, fetchContactPages } from "./page.js";
 import { probeMonetization, smartFetch, type SmartFetchResult } from "./renderer.js";
+import { probeList, probeTechStack } from "./sources.js";
 import { llmJson, llmConfigured } from "./llm.js";
 import type {
   Candidate,
@@ -176,20 +177,23 @@ export async function checkWebsite(ctx: VerifyCtx): Promise<WebsiteCheckResult> 
   };
   const result = verify([page], registry, candidate.website);
 
-  // Dork-discovered candidates: the website IS the entity (we found it via the
-  // dork), and `candidate.name` is an LLM/serp guess — so a name-match miss is
-  // expected, not disqualifying. Downgrade "rejected" to "flagged" and let the
-  // LLM ICP-relevance gate (run.ts) do the real filtering. Registry-discovered
-  // candidates keep the strict name-match verdict.
-  const isDorkSource = candidate.source?.startsWith("dork:") ?? false;
+  // URL-discovered candidates (dorks, Common Crawl, GitHub, URLScan, …): the
+  // website IS the entity, and `candidate.name` is a guess — so a name-match
+  // miss is expected, not disqualifying. Downgrade "rejected" to "flagged"
+  // and let the LLM ICP-relevance gate (run.ts) do the real filtering. Only
+  // candidates the registry already confirmed (reg_number set by
+  // verifyRegistry) keep the strict name-match verdict.
+  const nameConfirmed = Boolean(candidate.reg_number);
   let verdict = result.verdict;
   const signals = result.signals.filter((s) => s.fired).map((s) => s.name);
-  if (verdict === "rejected" && isDorkSource) {
+  if (verdict === "rejected" && !nameConfirmed) {
     verdict = "flagged";
-    signals.push("name-unconfirmed (dork source)");
+    signals.push("name-unconfirmed (search source)");
   }
   if (rendered) signals.push("rendered-dom");
-  signals.push(...probeMonetization(page.html, candidate.website));
+  const probes = probeList(pack);
+  if (probes.includes("monetization")) signals.push(...probeMonetization(page.html, candidate.website));
+  if (probes.includes("techstack")) signals.push(...probeTechStack(page.html));
 
   return { verdict, score: result.score, signals, page, rendered };
 }

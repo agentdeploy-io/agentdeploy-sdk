@@ -103,31 +103,36 @@ export function dorkPhrases(dork: string): string[] {
   return plain ? [plain] : [];
 }
 
+/** Raw URLScan search API (free, headless-friendly JSON). */
+export async function urlscanSearch(query: string, size = 50): Promise<SearchHit[]> {
+  try {
+    const res = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(query)}&size=${size}`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      results?: Array<{ page?: { url?: string; title?: string }; task?: { domain?: string } }>;
+    };
+    const hits: SearchHit[] = [];
+    for (const r of data.results ?? []) {
+      const url = r.page?.url ?? (r.task?.domain ? `https://${r.task.domain}` : undefined);
+      if (!url) continue;
+      hits.push({ url, title: r.page?.title ?? r.task?.domain ?? "", description: `urlscan: ${r.task?.domain ?? ""}` });
+    }
+    return hits;
+  } catch {
+    return [];
+  }
+}
+
 async function fetchUrlScan(dork: string, tld: string): Promise<SearchHit[]> {
   const phrases = dorkPhrases(dork);
-  const hits: SearchHit[] = [];
   for (const phrase of phrases.slice(0, 2)) {
-    const q = `domain:${tld} page.url:"${phrase}"`;
-    try {
-      const res = await fetch(`https://urlscan.io/api/v1/search/?q=${encodeURIComponent(q)}&size=10`, {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) continue;
-      const data = (await res.json()) as {
-        results?: Array<{ page?: { url?: string; title?: string }; task?: { domain?: string } }>;
-      };
-      for (const r of data.results ?? []) {
-        const url = r.page?.url ?? (r.task?.domain ? `https://${r.task.domain}` : undefined);
-        if (!url) continue;
-        hits.push({ url, title: r.page?.title ?? r.task?.domain ?? "", description: `urlscan: ${r.task?.domain ?? ""}` });
-      }
-      if (hits.length > 0) break; // ANDing more phrases empties the index — first non-empty phrase wins
-    } catch {
-      /* best effort */
-    }
+    const hits = await urlscanSearch(`domain:${tld} page.url:"${phrase}"`, 50);
+    if (hits.length > 0) return hits; // ANDing more phrases empties the index — first non-empty phrase wins
   }
-  return hits;
+  return [];
 }
 
 async function fetchDuckDuckGo(query: string): Promise<SearchHit[]> {

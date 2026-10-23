@@ -614,6 +614,12 @@ export class BiEdgeAgent {
         mxGuess: body.mxGuess ?? true,
         minScore: typeof body.minScore === "number" ? body.minScore : 50,
         perCountryLimit: typeof body.perCountryLimit === "number" ? body.perCountryLimit : 20,
+        sources: Array.isArray(body.sources) ? body.sources.map(String) : undefined,
+        probes: Array.isArray(body.probes) ? body.probes.map(String) : undefined,
+        ccFilters: Array.isArray(body.ccFilters) ? body.ccFilters.map(String) : undefined,
+        githubTopics: Array.isArray(body.githubTopics) ? body.githubTopics.map(String) : undefined,
+        urlscanQueries: Array.isArray(body.urlscanQueries) ? body.urlscanQueries.map(String) : undefined,
+        defillamaChains: Array.isArray(body.defillamaChains) ? body.defillamaChains.map(String) : undefined,
         isDefault: body.isDefault ?? false,
       };
       if (vertical.countries.length === 0) {
