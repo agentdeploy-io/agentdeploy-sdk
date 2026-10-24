@@ -165,6 +165,47 @@ Thinking panel, per-row "Simulate reply", plus start/stop, per-cron editor,
 run-now, send settings, sent log and the live funnel. A **Fleet** card points
 here.
 
+### ManyChat (inbound DMs / comments / follows → leads)
+
+**Inbound — `POST /inbound/manychat`.** Manychat pushes an event (new DM,
+comment, follow) to this URL; the engine upserts a lead keyed
+`mc-<user_id>` (`source: "manychat"`, stage `raw`, status
+`pending_review`) and preserves every raw event in the lead's `research`
+(repeats append — one lead per contact). The parser is tolerant of the
+common field-name variants (`user_id`/`psid`/`contact_id`,
+`message`/`text`/`comment`, `profile.first_name`, …). If
+`MANYCHAT_WEBHOOK_TOKEN` is set, the event's `token`/`secret` field must
+match (401 otherwise). A raw-event trace is logged to the LLM-trace table
+(`stage: "manychat-webhook"`) on every hit, so the exact payload Manychat
+sends can be inspected.
+
+**Status — `GET /cmd/manychat`.** Returns key presence, live API health
+(`GET /fb/page/getInfo` via the public API), webhook-token presence, the
+public webhook URL and the count of inbound leads. Rendered as the
+**ManyChat** panel on the Operations page.
+
+**Outbound client — `src/manychat/client.ts`.** Minimal typed client for the
+live ManyChat *Page API* (base `https://api.manychat.com`, auth
+`Authorization: Bearer <key>` — the classic `/api/v1/*` base no longer
+exists). Endpoints: page info, subscriber info/create, send text
+(dynamic-block v2), tags, add-tag-to-subscriber.
+
+**Wiring it up in the Manychat dashboard (paid plan required — the Free
+tier has no public API, no External Request and no dev webhooks):**
+
+1. Note the webhook URL from `GET /cmd/manychat` (or the Operations panel).
+2. Set `MANYCHAT_WEBHOOK_TOKEN` (secret) and use the same string as the
+   token in Manychat.
+3. In Manychat, create an automation triggered by *New message* /
+   *New comment* / *New follower* and add an **External Request** action:
+   `POST` the webhook URL with a JSON body carrying the contact fields
+   (`first_name`, message text, profile URL, …) plus `"token": "<secret>"`.
+   (Repeat per trigger — the Free tier's 4-automation limit does not apply
+   to paid plans.)
+4. Verify: DM the brand account yourself → a `mc-*` lead appears in the
+   pipeline; `GET /cmd/manychat` shows `api.ok: true` with the page name
+   once the API key is accepted.
+
 ---
 
 ## 2. Where every setting lives
@@ -180,6 +221,8 @@ here.
 | `BRAVE_API_KEY` | `bi-edge/.dev.vars` **and** `bi-core/.env` | secrets on both | Website discovery + researcher |
 | `BRAND_NAME` / `BRAND_ONE_LINER` / `BRAND_SITE_URL` / `BRAND_LOGO_URL` / `CALENDLY_URL` | `bi-edge/.dev.vars` | wrangler secrets on bi-edge | **Branding** (footer + writer persona) |
 | `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` | `bi-edge/.dev.vars` | wrangler secrets on bi-edge | **Real email sending** (empty = can't send, by design) |
+| `MANYCHAT_API_KEY` | `bi-edge/.dev.vars` | wrangler secret on bi-edge | **ManyChat public API** (`<account>:<secret>`; paid-plan feature — Free tier keys get `401 Wrong token`) |
+| `MANYCHAT_WEBHOOK_TOKEN` | `bi-edge/.dev.vars` | wrangler secret on bi-edge | Shared secret for `POST /inbound/manychat` (must match the token Manychat sends). Empty = endpoint accepts unauthenticated posts |
 | `SYNC_URL` / `SYNC_SECRET` / `DATA_DIR` | `bi-core/.env` | Railway env on bi-core | Sync back to the engine; checkpoint dir |
 | `PORT` | `bi-core/.env` | Railway auto | bi-core listen port (4111 local) |
 | `JEV_URL` | — (not set locally) | wrangler secret | Optional standalone classifier; engine falls back to the LLM gateway when unset |

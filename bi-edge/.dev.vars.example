@@ -43,3 +43,11 @@ CALENDLY_URL=
 # POST /cmd/settings {"sendEnabled":"true","dryRun":"false"} (dailyCap default 10).
 BREVO_API_KEY=
 BREVO_SENDER_EMAIL=
+
+# ── ManyChat (inbound DMs/comments/follows → leads) ─────────────────────────
+# Public API key "<account_id>:<secret>" (paid-plan feature; Free tier → 401).
+# Only needed for outbound/lookup calls — the inbound webhook does not use it.
+MANYCHAT_API_KEY=
+# Shared secret for POST /inbound/manychat; must match the token Manychat
+# sends (External Request / webhook config). Empty = accepts unauthenticated.
+MANYCHAT_WEBHOOK_TOKEN=

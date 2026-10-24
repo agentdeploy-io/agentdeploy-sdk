@@ -68,6 +68,17 @@ interface OpSecrets {
   [key: string]: boolean;
 }
 
+interface ManyChatStatus {
+  keyConfigured: boolean;
+  webhookTokenConfigured: boolean;
+  webhookUrl: string;
+  api:
+    | { ok: true; page: { id: number; name: string; username: string; category: string } }
+    | { ok: false; error: string };
+  inboundLeads: number;
+  freeTierNote?: string;
+}
+
 interface SentEntry {
   id: number;
   lead_key: string;
@@ -1549,6 +1560,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
   const [pendingDrafts, setPendingDrafts] = React.useState<number | null>(null);
   const [funnel, setFunnel] = React.useState<Array<{ stage: string; count: number }> | null>(null);
   const [scrapers, setScrapers] = React.useState<ScraperEntry[] | null>(null);
+  const [manychat, setManychat] = React.useState<ManyChatStatus | null>(null);
   const [testRecipient, setTestRecipient] = React.useState("");
   const [testModeOn, setTestModeOn] = React.useState(false);
   const [simulateEntry, setSimulateEntry] = React.useState<SentEntry | null>(null);
@@ -1565,7 +1577,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       setSchedulesError(null);
     }
     try {
-      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes, scrapersRes] =
+      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes, scrapersRes, manychatRes] =
         await Promise.all([
           authFetch(`${proxyBase(deploymentId)}/cmd/schedules`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/sent?limit=20`, { signal: AbortSignal.timeout(10000) }),
@@ -1575,6 +1587,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
           authFetch(`${proxyBase(deploymentId)}/cmd/pipeline`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/scrapers`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/manychat`, { signal: AbortSignal.timeout(15000) }),
         ]);
       if (schedRes.ok) {
         const j = (await schedRes.json()) as { schedules: OpSchedule[]; paused: boolean };
@@ -1613,6 +1626,9 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       if (scrapersRes.ok) {
         const j = (await scrapersRes.json()) as { scrapers: ScraperEntry[] };
         setScrapers(j.scrapers ?? []);
+      }
+      if (manychatRes.ok) {
+        setManychat((await manychatRes.json()) as ManyChatStatus);
       }
     } catch (err) {
       if (!quiet) setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
@@ -1925,6 +1941,67 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
             <p className="text-[0.6875rem] text-warning">
               Dry-run is OFF but sending is disabled — emails will be blocked by the gate stack.
             </p>
+          )}
+        </div>
+      </Panel>
+
+      {/* ── ManyChat (inbound DMs → leads) ─────────────────── */}
+      <Panel
+        title="ManyChat"
+        icon={<MessageSquareText className="size-4" />}
+        subtitle="Inbound DMs / comments / follows become leads via the /inbound/manychat webhook."
+      >
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[0.8125rem] text-muted-foreground">
+              API key{" "}
+              {manychat === null ? (
+                "…"
+              ) : manychat.keyConfigured ? (
+                manychat.api.ok ? (
+                  <Badge variant="success">live · {manychat.api.page.name}</Badge>
+                ) : (
+                  <Badge variant="warning">configured · rejected</Badge>
+                )
+              ) : (
+                <Badge variant="error">missing</Badge>
+              )}
+            </span>
+            <span className="text-[0.8125rem] text-muted-foreground">
+              Webhook token{" "}
+              {manychat === null ? (
+                "…"
+              ) : manychat.webhookTokenConfigured ? (
+                <Badge variant="success">set</Badge>
+              ) : (
+                <Badge variant="error">not set</Badge>
+              )}
+            </span>
+            {manychat !== null && (
+              <span className="text-[0.8125rem] text-muted-foreground">
+                Inbound leads <Badge variant={manychat.inboundLeads > 0 ? "success" : "outline"}>{manychat.inboundLeads}</Badge>
+              </span>
+            )}
+          </div>
+          {manychat !== null && manychat.keyConfigured && !manychat.api.ok && (
+            <p className="text-[0.6875rem] text-warning">{manychat.api.error}</p>
+          )}
+          {manychat !== null && manychat.api.ok && (
+            <p className="text-[0.6875rem] text-muted-foreground">
+              Connected as <span className="text-foreground">{manychat.api.page.name}</span> (@{manychat.api.page.username} · {manychat.api.page.category}).
+            </p>
+          )}
+          {manychat !== null && (
+            <div className="rounded-md border border-border-strong bg-muted/40 p-2.5">
+              <p className="mb-1 text-[0.6875rem] font-medium text-foreground">Webhook URL (paste into Manychat)</p>
+              <code className="block break-all text-[0.75rem] text-muted-foreground">{manychat.webhookUrl}</code>
+              <p className="mt-2 text-[0.6875rem] text-muted-foreground">
+                In the Manychat dashboard, add an External-Request action (or webhook) on a “New message / New comment / New follower”
+                automation that POSTs JSON <code>{`{ "token": "…" }`}</code>-merged contact fields to this URL. Set the same token as
+                <code> MANYCHAT_WEBHOOK_TOKEN</code> (wrangler secret). Note: External Request + the public API are paid-plan features — the
+                Free tier cannot push events out.
+              </p>
+            </div>
           )}
         </div>
       </Panel>

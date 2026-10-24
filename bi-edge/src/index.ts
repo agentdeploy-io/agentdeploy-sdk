@@ -13,6 +13,7 @@ export { housekeepingCron } from "./cron/housekeeping.js";
 export { handleInboundSync } from "./routes/inbound-sync.js";
 export { handleDataApi } from "./routes/data-api.js";
 export { handleInboundWebhook } from "./routes/inbound-webhook.js";
+export { handleManychatWebhook } from "./routes/inbound-manchat.js";
 export { CfSqlDatabase } from "./db/cf-sqlite.js";
 
 import { createHandler } from "@agentdeploy-io/edge-sdk";
@@ -20,6 +21,8 @@ import { Supervisor, COMMANDS, parseCommand, handleCommand } from "./agents/supe
 import { handleInboundSync } from "./routes/inbound-sync.js";
 import { handleDataApi } from "./routes/data-api.js";
 import { handleInboundWebhook } from "./routes/inbound-webhook.js";
+import { handleManychatWebhook } from "./routes/inbound-manchat.js";
+import { manychatPageInfo, ManyChatError } from "./manychat/client.js";
 import { researchCron } from "./cron/research.js";
 import { replyPollCron } from "./cron/reply-poll.js";
 import { crawlCron } from "./cron/crawl.js";
@@ -201,6 +204,7 @@ export class BiEdgeAgent {
         routes: [
           "POST /inbound/sync",
           "POST /inbound-webhook",
+          "POST /inbound/manychat",
           "GET|POST /cmd/data*",
           "GET /cmd/runs",
           "GET /cmd/pipeline",
@@ -216,6 +220,7 @@ export class BiEdgeAgent {
           "GET|POST /cmd/secrets",
           "GET /cmd/wire",
           "GET|POST /cmd/campaign",
+          "GET /cmd/manychat",
           "POST /cmd/simulate-reply",
           "GET /cmd/traces",
           "GET /health",
@@ -231,6 +236,10 @@ export class BiEdgeAgent {
 
     if ((url.pathname === "/inbound-webhook" || url.pathname === "/inbound/webhook") && request.method === "POST") {
       return withCors(await handleInboundWebhook(request, env, db as any));
+    }
+
+    if (url.pathname === "/inbound/manychat" && request.method === "POST") {
+      return withCors(await handleManychatWebhook(request, env, db as any));
     }
 
     if (
@@ -272,12 +281,16 @@ export class BiEdgeAgent {
         topology: "bi-edge",
         agents: ["supervisor", "qualifier", "researcher", "writer", "outreach"],
         crons: Object.keys(CRON_NAME_MAP),
-        routes: ["/inbound/sync", "/inbound-webhook", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/simulate-reply", "/cmd/traces"],
+        routes: ["/inbound/sync", "/inbound-webhook", "/inbound/manychat", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/manychat", "/cmd/simulate-reply", "/cmd/traces"],
       }));
     }
 
     if (url.pathname === "/cmd/campaign") {
       return withCors(await this.handleCampaign(request, db, env));
+    }
+
+    if (url.pathname === "/cmd/manychat" && request.method === "GET") {
+      return withCors(await this.handleManychatStatus(request, db, env));
     }
 
     if (url.pathname === "/cmd/simulate-reply" && request.method === "POST") {
@@ -457,6 +470,58 @@ export class BiEdgeAgent {
   }
 
   /**
+   * GET /cmd/manychat — ManyChat integration status for the Operations UI:
+   * key presence, live API health (getInfo), webhook token presence, and the
+   * public webhook URL to paste into the Manychat dashboard.
+   */
+  private async handleManychatStatus(request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+    const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+    const proto = request.headers.get("x-forwarded-proto") ?? "https";
+    const webhookUrl = host ? `${proto}://${host}/inbound/manychat` : "(deployed URL)/inbound/manychat";
+
+    const keyConfigured = Boolean(String(env.MANYCHAT_API_KEY ?? "").trim());
+    const webhookTokenConfigured = Boolean(String(env.MANYCHAT_WEBHOOK_TOKEN ?? "").trim());
+
+    let api: { ok: true; page: { id: number; name: string; username: string; category: string } } | { ok: false; error: string } = {
+      ok: false,
+      error: keyConfigured ? "" : "no API key configured",
+    };
+    if (keyConfigured) {
+      try {
+        const page = await manychatPageInfo(env);
+        api = { ok: true, page: { id: page.id, name: page.name, username: page.username, category: page.category } };
+      } catch (e: any) {
+        const msg = e instanceof ManyChatError ? e.message : String(e?.message ?? e);
+        api = {
+          ok: false,
+          error:
+            e instanceof ManyChatError && e.status === 401
+              ? "key rejected by ManyChat (401 Wrong token — public API requires a paid plan; key may also be stale)"
+              : msg,
+        };
+      }
+    }
+
+    let inboundLeads = 0;
+    try {
+      const row = (db as any).prepare("SELECT COUNT(*) AS n FROM leads WHERE source = 'manychat'").get() as { n: number } | undefined;
+      inboundLeads = row?.n ?? 0;
+    } catch {
+      /* DB not ready */
+    }
+
+    return json({
+      keyConfigured,
+      webhookTokenConfigured,
+      webhookUrl,
+      api,
+      inboundLeads,
+      freeTierNote:
+        "ManyChat public API + External Request/webhooks are paid-plan features. On the Free tier the key returns 401 and no events can be pushed out.",
+    });
+  }
+
+  /**
    * POST /cmd/simulate-reply — fabricate an inbound reply from the operator's
    * test inbox and run it through the SAME classify → draft pipeline as a real
    * Brevo webhook. Lets the whole loop be exercised end-to-end with no mailbox.
@@ -550,6 +615,8 @@ export class BiEdgeAgent {
       "BRAVE_API_KEY",
       "CORE_URL",
       "JEV_URL",
+      "MANYCHAT_API_KEY",
+      "MANYCHAT_WEBHOOK_TOKEN",
     ];
 
     if (request.method === "GET") {
