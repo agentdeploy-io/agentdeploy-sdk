@@ -3,7 +3,8 @@
 import type Database from "better-sqlite3";
 import type DatabaseType from "better-sqlite3";
 import { getLead, upsertLead, logLlmTrace } from "../db/index.js";
-import type { Lead } from "../db/types.js";
+import type { Lead, ReplyIntent } from "../db/types.js";
+import { processDmInbound } from "../agents/dm-reply.js";
 
 /**
  * ManyChat inbound webhook — turns inbound Instagram/Messenger activity into
@@ -160,10 +161,11 @@ export async function handleManychatWebhook(
     raw: raw,
   }).slice(0, 20000);
 
+  let lead: Lead;
   if (existing) {
     // Append the new signal; keep the original creation time + identity.
     const prevResearch = existing.research ? `${existing.research}\n---\n` : "";
-    const lead: Lead = {
+    lead = {
       ...existing,
       name: existing.name && existing.name !== `Manychat contact ${norm.userId}` ? existing.name : norm.name,
       website: existing.website ?? (norm.profileUrl || null),
@@ -174,11 +176,8 @@ export async function handleManychatWebhook(
       status: "pending_review",
       updated_at: now,
     };
-    upsertLead(db, lead);
-    return json({ received: 1, lead: true, key, event: eventType, updated: true });
-  }
-
-  const lead: Lead = {
+  } else {
+  lead = {
     key,
     country: norm.region || "ig",
     name: norm.name,
@@ -192,7 +191,30 @@ export async function handleManychatWebhook(
     status: "pending_review",
     created_at: now,
     updated_at: now,
+    manychat_subscriber_id: /^\d+$/.test(norm.userId) ? norm.userId : null,
   };
+  }
+
   upsertLead(db, lead);
-  return json({ received: 1, lead: true, key, event: eventType, created: true });
+
+  // Two-way loop: classify + (if warranted) draft a reply. Best-effort —
+  // the lead is already saved by the time this runs; a slow/failed LLM
+  // never costs us the inbound event.
+  let dm: { intent?: ReplyIntent; summary?: string; draftPending?: boolean; error?: string } | undefined;
+  if (norm.text && (eventType === "new_message" || eventType === "new_comment" || eventType === "unknown")) {
+    try {
+      dm = await processDmInbound(db, key, norm.text, env);
+    } catch (e: any) {
+      dm = { error: String(e?.message ?? e) };
+    }
+  }
+
+  return json({
+    received: 1,
+    lead: true,
+    key,
+    event: eventType,
+    [existing ? "updated" : "created"]: true,
+    ...(dm ? { dm } : {}),
+  });
 }

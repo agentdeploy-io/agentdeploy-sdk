@@ -195,10 +195,11 @@ function rowToApproval(
     case "review-reply": {
       const from = str(row.reply_from);
       const intent = str(row.intent);
+      const isDm = str(row.channel) === "manychat";
       const who = from ? `from ${from}` : "reply draft";
       return {
         ...base,
-        summary: `Reply ${who}${intent ? ` (${intent})` : ""} — ${rowSummary(row, rowKey)}: ${str(row.draft) ? `“${str(row.draft)!.slice(0, 120)}${(str(row.draft)!.length ?? 0) > 120 ? "…" : ""}”` : "(no draft text)"}`,
+        summary: `${isDm ? "DM " : ""}Reply ${who}${intent ? ` (${intent})` : ""} — ${rowSummary(row, rowKey)}: ${str(row.draft) ? `“${str(row.draft)!.slice(0, 120)}${(str(row.draft)!.length ?? 0) > 120 ? "…" : ""}”` : "(no draft text)"}`,
       };
     }
     case "review-website":

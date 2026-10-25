@@ -6,6 +6,9 @@ const DEFAULTS: DefaultSettings = {
   dryRun: true,
   sendEnabled: false,
   dailyCap: 10,
+  dmDryRun: true,
+  dmEnabled: false,
+  dmDailyCap: 10,
 };
 
 const UPSERT_SETTING = `
@@ -87,6 +90,27 @@ export function getDailyCap(db: Database.Database): number {
  * apply (dry-run / sendEnabled / cap) — test mode only changes WHO receives,
  * so a real lead can never be emailed while testing.
  */
+/**
+ * DM (ManyChat) send gates — independent of the email gates so a dry-run
+ * email pipeline can run while DMs are live (and vice versa). Defaults are
+ * fail-closed: dmDryRun=true AND dmEnabled=false.
+ */
+export function isDmDryRun(db: Database.Database): boolean {
+  const raw = getSetting(db, "dmDryRun");
+  if (raw === undefined) return DEFAULTS.dmDryRun;
+  return raw === "true";
+}
+
+export function isDmEnabled(db: Database.Database): boolean {
+  return getSetting(db, "dmEnabled") === "true";
+}
+
+export function getDmDailyCap(db: Database.Database): number {
+  const raw = getSetting(db, "dmDailyCap");
+  if (raw === undefined) return DEFAULTS.dmDailyCap;
+  return Number(raw);
+}
+
 export function isTestMode(db: Database.Database): boolean {
   return getSetting(db, "testMode") === "true";
 }

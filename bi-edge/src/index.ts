@@ -37,6 +37,9 @@ import {
   countSentToday,
   isPaused,
   getSetting,
+  isDmDryRun,
+  isDmEnabled,
+  getDmDailyCap,
   listTraces,
   getLead,
   isTestMode,
@@ -503,9 +506,12 @@ export class BiEdgeAgent {
     }
 
     let inboundLeads = 0;
+    let pendingDmDrafts = 0;
     try {
       const row = (db as any).prepare("SELECT COUNT(*) AS n FROM leads WHERE source = 'manychat'").get() as { n: number } | undefined;
       inboundLeads = row?.n ?? 0;
+      const drafts = (db as any).prepare("SELECT COUNT(*) AS n FROM replies_log WHERE channel = 'manychat' AND draft_status = 'pending'").get() as { n: number } | undefined;
+      pendingDmDrafts = drafts?.n ?? 0;
     } catch {
       /* DB not ready */
     }
@@ -516,6 +522,13 @@ export class BiEdgeAgent {
       webhookUrl,
       api,
       inboundLeads,
+      pendingDmDrafts,
+      dm: {
+        dmDryRun: isDmDryRun(db as any),
+        dmEnabled: isDmEnabled(db as any),
+        dmDailyCap: getDmDailyCap(db as any),
+        sentDmToday: countSentToday(db as any, "manychat"),
+      },
       freeTierNote:
         "ManyChat public API + External Request/webhooks are paid-plan features. On the Free tier the key returns 401 and no events can be pushed out.",
     });

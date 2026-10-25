@@ -75,6 +75,7 @@ export interface Lead {
   created_at?: string | null;
   updated_at?: string | null;
   last_sync_at?: string | null;
+  manychat_subscriber_id?: string | null;
 }
 
 export interface LeadPatch {
@@ -102,6 +103,7 @@ export interface LeadPatch {
   status?: LeadStatus;
   updated_at?: string;
   last_sync_at?: string;
+  manychat_subscriber_id?: string | null;
 }
 
 export interface LeadListFilters {
@@ -167,10 +169,12 @@ export interface SentLogEntry {
   message_id?: string | null;
   status: SentStatus;
   at: string;
+  channel?: ReplyChannel | null;
 }
 
 export type ReplyIntent = "interested" | "question" | "not_interested" | "opt_out" | "spam";
 export type DraftStatus = "pending" | "approved" | "sent" | "discarded";
+export type ReplyChannel = "email" | "manychat";
 
 export interface RepliesLogEntry {
   id?: number;
@@ -182,6 +186,7 @@ export interface RepliesLogEntry {
   draft?: string | null;
   draft_status?: DraftStatus | null;
   at: string;
+  channel?: ReplyChannel | null;
 }
 
 export type BlacklistKind = "email" | "domain" | "company" | "any";
@@ -214,6 +219,9 @@ export interface DefaultSettings {
   dryRun: boolean;
   sendEnabled: boolean;
   dailyCap: number;
+  dmDryRun: boolean;
+  dmEnabled: boolean;
+  dmDailyCap: number;
   [key: string]: boolean | number | string;
 }
 

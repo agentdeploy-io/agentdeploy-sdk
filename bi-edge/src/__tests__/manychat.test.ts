@@ -1,4 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// inbound-manchat → dm-reply → edge-sdk (cloudflare: scheme) — stub out the
+// LLM gateway; the webhook tests only assert on lead creation, not replies.
+vi.mock("@agentdeploy-io/edge-sdk", () => ({
+  createAgent: vi.fn(() => ({ id: "test-agent" })),
+  gatewayFetchWithBackoff: vi.fn(),
+  gatewayHeaders: vi.fn(() => ({})),
+  parseLlmJson: vi.fn(),
+}));
+
 import Database from "better-sqlite3";
 import { runMigrations } from "../db/migrations.js";
 import { getLead } from "../db/leads.js";

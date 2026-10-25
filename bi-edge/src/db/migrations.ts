@@ -31,6 +31,11 @@ const MIGRATIONS: Record<number, string> = {
       updated_at TEXT
     );
   `,
+  4: `
+    ALTER TABLE replies_log ADD COLUMN channel TEXT NOT NULL DEFAULT 'email';
+    ALTER TABLE sent_log ADD COLUMN channel TEXT NOT NULL DEFAULT 'email';
+    ALTER TABLE leads ADD COLUMN manychat_subscriber_id TEXT;
+  `,
 };
 
 export function runMigrations(db: Database.Database): number {

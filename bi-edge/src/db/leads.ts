@@ -13,13 +13,13 @@ const UPSERT_SQL = `
     address, city, website, website_status, website_evidence,
     emails, phones, socials, source, source_url,
     stage, classification, research, pitch_subject, pitch_body,
-    status, created_at, updated_at, last_sync_at
+    status, created_at, updated_at, last_sync_at, manychat_subscriber_id
   ) VALUES (
     @key, @country, @name, @reg_number, @sic, @sic_label, @incorporated,
     @address, @city, @website, @website_status, @website_evidence,
     @emails, @phones, @socials, @source, @source_url,
     @stage, @classification, @research, @pitch_subject, @pitch_body,
-    @status, @created_at, @updated_at, @last_sync_at
+    @status, @created_at, @updated_at, @last_sync_at, @manychat_subscriber_id
   )
 `;
 
@@ -58,6 +58,7 @@ export function upsertLead(db: Database.Database, lead: Lead): void {
     created_at: lead.created_at ?? new Date().toISOString(),
     updated_at: lead.updated_at ?? new Date().toISOString(),
     last_sync_at: lead.last_sync_at ?? null,
+    manychat_subscriber_id: lead.manychat_subscriber_id ?? null,
   });
 }
 

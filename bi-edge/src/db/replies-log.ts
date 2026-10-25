@@ -2,8 +2,8 @@ import type Database from "better-sqlite3";
 import type { RepliesLogEntry, ReplyIntent, DraftStatus } from "./types.js";
 
 const INSERT_ENTRY = `
-  INSERT INTO replies_log (lead_key, reply_from, reply_subject, reply_body, intent, draft, draft_status, at)
-  VALUES (@lead_key, @reply_from, @reply_subject, @reply_body, @intent, @draft, @draft_status, @at)
+  INSERT INTO replies_log (lead_key, reply_from, reply_subject, reply_body, intent, draft, draft_status, at, channel)
+  VALUES (@lead_key, @reply_from, @reply_subject, @reply_body, @intent, @draft, @draft_status, @at, @channel)
 `;
 
 const UPDATE_DRAFT = `
@@ -25,6 +25,7 @@ export function logReply(db: Database.Database, entry: Omit<RepliesLogEntry, "id
     draft: entry.draft ?? null,
     draft_status: entry.draft_status ?? null,
     at: entry.at,
+    channel: entry.channel ?? "email",
   });
   return result.lastInsertRowid as number;
 }

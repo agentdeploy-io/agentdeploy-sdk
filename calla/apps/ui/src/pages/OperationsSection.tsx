@@ -76,6 +76,8 @@ interface ManyChatStatus {
     | { ok: true; page: { id: number; name: string; username: string; category: string } }
     | { ok: false; error: string };
   inboundLeads: number;
+  pendingDmDrafts: number;
+  dm: { dmDryRun: boolean; dmEnabled: boolean; dmDailyCap: number; sentDmToday: number };
   freeTierNote?: string;
 }
 
@@ -1997,9 +1999,60 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
               <code className="block break-all text-[0.75rem] text-muted-foreground">{manychat.webhookUrl}</code>
               <p className="mt-2 text-[0.6875rem] text-muted-foreground">
                 In the Manychat dashboard, add an External-Request action (or webhook) on a “New message / New comment / New follower”
-                automation that POSTs JSON <code>{`{ "token": "…" }`}</code>-merged contact fields to this URL. Set the same token as
-                <code> MANYCHAT_WEBHOOK_TOKEN</code> (wrangler secret). Note: External Request + the public API are paid-plan features — the
-                Free tier cannot push events out.
+                automation that POSTs JSON contact fields to this URL. Set the same token as
+                <code> MANYCHAT_WEBHOOK_TOKEN</code> (wrangler secret). External Request + the public API are paid-plan features.
+              </p>
+            </div>
+          )}
+          {manychat !== null && (
+            <div className="flex flex-col gap-2 rounded-md border border-border-strong p-2.5">
+              <p className="text-[0.6875rem] font-medium text-foreground">
+                Auto-reply loop{" "}
+                <Badge variant={manychat.pendingDmDrafts > 0 ? "warning" : "outline"}>{manychat.pendingDmDrafts} pending draft(s)</Badge>
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={manychat.dm.dmDryRun ? "default" : "outline"}
+                  onClick={() => setSendSetting("dmDryRun", String(!manychat.dm.dmDryRun))}
+                  disabled={settingsBusy}
+                  aria-pressed={manychat.dm.dmDryRun}
+                >
+                  {manychat.dm.dmDryRun ? "DM dry-run ON" : "DM dry-run OFF"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant={manychat.dm.dmEnabled ? "success" : "outline"}
+                  onClick={() => setSendSetting("dmEnabled", String(!manychat.dm.dmEnabled))}
+                  disabled={settingsBusy}
+                  aria-pressed={manychat.dm.dmEnabled}
+                >
+                  {manychat.dm.dmEnabled ? "DM sending ENABLED" : "DM sending disabled"}
+                </Button>
+                <label className="flex items-center gap-1.5 text-[0.8125rem] text-muted-foreground">
+                  Daily cap
+                  <input
+                    defaultValue={String(manychat.dm.dmDailyCap)}
+                    key={`${deploymentId}-dmcap-${manychat.dm.dmDailyCap}`}
+                    onBlur={(e) => {
+                      const n = Number(e.target.value);
+                      if (Number.isInteger(n) && n > 0 && n !== manychat.dm.dmDailyCap) {
+                        setSendSetting("dmDailyCap", String(n));
+                      }
+                    }}
+                    aria-label="daily DM cap"
+                    className="h-8 w-16 rounded-md border border-border-strong bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </label>
+                <span className="text-[0.75rem] text-muted-foreground">
+                  sent today: {manychat.dm.sentDmToday}/{manychat.dm.dmDailyCap}
+                </span>
+              </div>
+              <p className="text-[0.6875rem] text-muted-foreground">
+                Inbound DMs are classified (interested / question / …) and a reply is drafted into the approval queue — approve it there to
+                send via Manychat.
+                {manychat.dm.dmDryRun && " DM dry-run is ON — approvals log the DM without sending."}
+                {!manychat.dm.dmDryRun && !manychat.dm.dmEnabled && " DM dry-run is OFF but sending is disabled — DMs will be blocked."}
               </p>
             </div>
           )}

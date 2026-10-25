@@ -3,6 +3,7 @@
 import { createAgent } from "@agentdeploy-io/edge-sdk";
 import type { AgentDeployAgent } from "@agentdeploy-io/edge-sdk";
 import Database from "better-sqlite3";
+import { sendDmReplyDraft } from "./dm-reply.js";
 import {
   listLeads,
   getLead,
@@ -93,6 +94,9 @@ async function sendReplyDraft(
 ): Promise<string> {
   const entry = getReplyLogById(db, id);
   if (!entry) return `Reply log ${id} not found`;
+  if (entry.channel === "manychat") {
+    return sendDmReplyDraft(db, id, env);
+  }
   if (!entry.draft) return `Reply ${id} has no draft to send`;
   if (entry.draft_status === "sent") return `Reply ${id} was already sent`;
   if (entry.draft_status === "discarded") return `Reply ${id} was discarded`;

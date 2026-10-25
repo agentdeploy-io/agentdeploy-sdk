@@ -190,6 +190,20 @@ live ManyChat *Page API* (base `https://api.manychat.com`, auth
 exists). Endpoints: page info, subscriber info/create, send text
 (dynamic-block v2), tags, add-tag-to-subscriber.
 
+**Two-way DM loop (auto-reply).** Every inbound DM/comment event is also
+run through the reply pipeline: the LLM classifies intent
+(interested / question / not_interested / opt_out / spam), and for
+interested/question it drafts a reply into the SAME approvals queue as
+email replies (badged "DM" in the inbox). Approving runs `/send-reply`,
+which routes `channel=manychat` drafts through Manychat (`sendContent`)
+instead of Brevo. DM gates are independent of the email ones (fail-closed
+defaults): `dmDryRun=true`, `dmEnabled=false`, `dmDailyCap=10`
+(settings table; toggles in the Operations → ManyChat panel). Test mode
+redirects DMs to the subscriber id in setting `dmTestRecipient`. If the
+stored subscriber id is unknown/rotated, the sender recreates the
+subscriber from the lead's email/phone and retries once. Opt-out DMs mark
+the lead `opted_out` (no reply drafted).
+
 **Wiring it up in the Manychat dashboard (paid plan required — the Free
 tier has no public API, no External Request and no dev webhooks):**
 
@@ -235,7 +249,9 @@ git-ignored.
 **Send toggles are runtime settings, not env vars** — stored in the engine DB:
 `GET/POST /cmd/settings` (`sendEnabled`, `dryRun`, `paused`, `dailyCap`).
 Defaults: `sendEnabled=false`, `dryRun=true` → **no real email can fire** until
-both are flipped.
+both are flipped. DM sends have their own independent toggles:
+`dmEnabled`, `dmDryRun`, `dmDailyCap` (defaults `false` / `true` / `10` →
+**no real DM can fire** until `dmDryRun=false` AND `dmEnabled=true`).
 
 ### Branding (Agent Miles / gradient3.io)
 
