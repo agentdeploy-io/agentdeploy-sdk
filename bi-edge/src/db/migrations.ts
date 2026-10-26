@@ -36,6 +36,11 @@ const MIGRATIONS: Record<number, string> = {
     ALTER TABLE sent_log ADD COLUMN channel TEXT NOT NULL DEFAULT 'email';
     ALTER TABLE leads ADD COLUMN manychat_subscriber_id TEXT;
   `,
+  5: `
+    UPDATE leads SET emails = NULL WHERE emails IS NOT NULL AND emails LIKE '%[object Object]%';
+    UPDATE leads SET phones = NULL WHERE phones IS NOT NULL AND phones LIKE '%[object Object]%';
+    UPDATE leads SET socials = NULL WHERE socials IS NOT NULL AND socials LIKE '%[object Object]%';
+  `,
 };
 
 export function runMigrations(db: Database.Database): number {

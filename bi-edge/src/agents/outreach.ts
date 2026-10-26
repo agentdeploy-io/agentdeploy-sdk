@@ -48,18 +48,51 @@ function escH(s: string | null | undefined): string {
     .replace(/>/g, "&gt;");
 }
 
-export function getFirstEmail(lead: Lead): string {
+const EMAIL_ADDRESS_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+export function emailAddress(v: unknown): string {
+  if (typeof v !== "string") return "";
+  const s = v.trim();
+  return EMAIL_ADDRESS_RE.test(s) ? s : "";
+}
+
+/**
+ * Pick the best deliverable email for a lead, preferring real addresses over
+ * guesses: personal > role > guessed, and mx_ok over unverified. Corrupted
+ * or unparseable contact data yields "" (fail closed — never email a
+ * malformed address).
+ */
+export function pickBestEmail(lead: Lead): string {
   if (!lead.emails) return "";
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(lead.emails);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      const first = parsed[0];
-      return first.addr ?? first.email ?? String(first);
-    }
+    parsed = JSON.parse(lead.emails);
   } catch {
-    return lead.emails;
+    // Legacy rows may hold a bare string address.
+    return EMAIL_ADDRESS_RE.test(lead.emails.trim()) ? lead.emails.trim() : "";
   }
-  return "";
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  const rank = (e: any): number => {
+    if (!e || typeof e !== "object") {
+      return EMAIL_ADDRESS_RE.test(String(e)) ? 95 : -1; // bare string
+    }
+    const addr = emailAddress(e.address ?? e.addr ?? e.email);
+    if (!addr) return -1;
+    const kind = String(e.kind ?? "role");
+    const kindBase = kind === "personal" ? 100 : kind === "guessed" ? 60 : 90;
+    // An MX-failed address bounces — it must not outrank a verified one.
+    return kindBase + (e.mx_ok === false ? -50 : 0);
+  };
+  const ranked = list
+    .map((e) => ({ e, r: rank(e) }))
+    .filter((x) => x.r >= 0)
+    .sort((a, b) => b.r - a.r);
+  if (ranked.length === 0) return "";
+  return emailAddress(ranked[0]!.e.address ?? ranked[0]!.e.addr ?? ranked[0]!.e.email ?? ranked[0]!.e);
+}
+
+export function getFirstEmail(lead: Lead): string {
+  return pickBestEmail(lead);
 }
 
 /**
@@ -103,15 +136,18 @@ export function buildSignatureFooter(
 
 function hasMxOk(lead: Lead): boolean {
   if (!lead.emails) return false;
+  // Corrupted/unparseable contact data fails closed: we cannot confirm any
+  // address is deliverable.
   try {
     const parsed = JSON.parse(lead.emails);
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed.some((e: any) => e.mx_ok !== false);
+      return parsed.some((e: any) => (e && typeof e === "object" ? e.mx_ok !== false : true));
     }
+    return false;
   } catch {
-    return true;
+    // Legacy bare-string address — no MX info available.
+    return EMAIL_ADDRESS_RE.test(lead.emails.trim());
   }
-  return true;
 }
 
 export function runGateStack(

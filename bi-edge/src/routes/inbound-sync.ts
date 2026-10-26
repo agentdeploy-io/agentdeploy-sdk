@@ -14,6 +14,29 @@ function initDb(): DatabaseType.Database {
 
 const MAX_BATCH = 25;
 
+const CORRUPTED_CONTACT_RE = /\[object Object/;
+
+/**
+ * The leads table stores contact fields as JSON *strings*, but sync senders
+ * are allowed to post arrays/objects. Cloudflare DO sql.exec string-coerces
+ * bound arrays to "[object Object]" (silently destroying the data), so
+ * normalize to a JSON string before binding. Corrupted legacy strings are
+ * reset to null rather than propagated.
+ */
+function toJsonField(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (s === "" || CORRUPTED_CONTACT_RE.test(s)) return null;
+    return s;
+  }
+  if (Array.isArray(v) || typeof v === "object") {
+    if (Array.isArray(v) && v.length === 0) return null;
+    return JSON.stringify(v);
+  }
+  return String(v);
+}
+
 export async function handleInboundSync(
   request: Request,
   env: Record<string, unknown>,
@@ -70,9 +93,9 @@ export async function handleInboundSync(
     website: l.website ?? null,
     website_status: l.website_status ?? "none",
     website_evidence: l.website_evidence ?? null,
-    emails: l.emails ?? null,
-    phones: l.phones ?? null,
-    socials: l.socials ?? null,
+    emails: toJsonField(l.emails),
+    phones: toJsonField(l.phones),
+    socials: toJsonField(l.socials),
     source: l.source ?? "sync",
     source_url: l.source_url ?? null,
     stage: l.stage ?? "raw",

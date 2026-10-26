@@ -25,6 +25,26 @@ const UPSERT_SQL = `
 
 const SELECT_BY_KEY = `SELECT * FROM leads WHERE key = ?`;
 
+const CORRUPTED_CONTACT_RE = /\[object Object/;
+
+/**
+ * Contact columns are TEXT (JSON strings). Callers typed against `Lead`
+ * should pass strings, but a runtime array bound to a CF DO SqlStorage
+ * binding silently coerces to "[object Object]" — normalize here so no
+ * write path can corrupt the columns.
+ */
+function contactField(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "string") {
+    const s = v.trim();
+    return s === "" || CORRUPTED_CONTACT_RE.test(s) ? null : s;
+  }
+  if (Array.isArray(v) || typeof v === "object") {
+    return Array.isArray(v) && v.length === 0 ? null : JSON.stringify(v);
+  }
+  return String(v);
+}
+
 const DELETE_BY_KEY = `DELETE FROM leads WHERE key = ?`;
 
 const COUNT_BY_STAGE = `SELECT stage, COUNT(*) as cnt FROM leads GROUP BY stage`;
@@ -44,9 +64,9 @@ export function upsertLead(db: Database.Database, lead: Lead): void {
     website: lead.website ?? null,
     website_status: lead.website_status ?? "none",
     website_evidence: lead.website_evidence ?? null,
-    emails: lead.emails ?? null,
-    phones: lead.phones ?? null,
-    socials: lead.socials ?? null,
+    emails: contactField(lead.emails),
+    phones: contactField(lead.phones),
+    socials: contactField(lead.socials),
     source: lead.source ?? null,
     source_url: lead.source_url ?? null,
     stage: lead.stage ?? "raw",
@@ -112,10 +132,9 @@ export function updateLead(db: Database.Database, key: string, patch: LeadPatch)
   const params: Record<string, unknown> = { key };
 
   for (const [field, value] of Object.entries(patch)) {
-    if (value !== undefined) {
-      fields.push(`${field} = @${field}`);
-      params[field] = value;
-    }
+    if (value === undefined) continue;
+    fields.push(`${field} = @${field}`);
+    params[field] = field === "emails" || field === "phones" || field === "socials" ? contactField(value) : value;
   }
 
   if (fields.length === 0) return false;
@@ -139,10 +158,9 @@ export function batchUpdateLeads(
   const params: Record<string, unknown> = {};
 
   for (const [field, value] of Object.entries(patch)) {
-    if (value !== undefined) {
-      fields.push(`${field} = @${field}`);
-      params[field] = value;
-    }
+    if (value === undefined) continue;
+    fields.push(`${field} = @${field}`);
+    params[field] = field === "emails" || field === "phones" || field === "socials" ? contactField(value) : value;
   }
 
   if (fields.length === 0) return 0;

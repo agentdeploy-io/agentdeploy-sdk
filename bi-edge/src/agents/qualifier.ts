@@ -59,9 +59,13 @@ function leadToIcpInput(lead: Lead) {
   if (lead.emails) {
     try {
       const parsed = JSON.parse(lead.emails);
-      emails = Array.isArray(parsed) ? parsed.map((e: any) => e.addr ?? e) : [];
+      if (Array.isArray(parsed)) {
+        emails = parsed
+          .map((e: any) => (e && typeof e === "object" ? e.addr ?? e.address ?? e.email ?? "" : String(e)))
+          .filter((s: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s));
+      }
     } catch {
-      emails = [lead.emails];
+      // Corrupted contact data — drop it rather than feed it to the LLM.
     }
   }
 
