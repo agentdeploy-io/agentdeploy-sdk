@@ -87,11 +87,22 @@ function loadCheckpoint<T>(runId: string, step: string): T | null {
 const verticalPackSchema = z.any();
 
 // Shared by every step's input/output so the chain types line up.
+// syncUrl/syncSecret/edgeRunId are threaded through every step because each
+// step's schema strips undeclared fields — finalize needs them to report the
+// run outcome back to the engine.
 const verticalFlowFields = {
   verticalDone: z.boolean().optional().default(false),
   verticalStats: z.any().nullable().optional(),
+  syncUrl: z.string().optional(),
+  syncSecret: z.string().optional(),
+  edgeRunId: z.number().optional(),
 };
 const verticalFlowSchema = z.object(verticalFlowFields);
+
+/** Thread the report context through step boundaries (schemas strip the rest). */
+function flowCtx(d: Record<string, unknown>): Record<string, unknown> {
+  return { syncUrl: d["syncUrl"], syncSecret: d["syncSecret"], edgeRunId: d["edgeRunId"] };
+}
 
 const crawlInputSchema = z.object({
   countries: z.array(z.string()).default(["fr", "uk", "ie", "ee", "pt"]),
@@ -104,6 +115,8 @@ const crawlInputSchema = z.object({
   tokensLimit: z.number().optional().default(500000),
   perCountryLimit: z.number().optional().default(20),
   runId: z.string().optional(),
+  // The engine's crawl_runs row id (bi-edge) — run-complete reports key on it.
+  edgeRunId: z.number().optional(),
   // A vertical pack (from the engine) switches the run from the legacy
   // registry harvest to the behavior-driven vertical pipeline.
   vertical: verticalPackSchema.optional(),
@@ -211,6 +224,7 @@ const intakeStep = createStep({
         stats: inputData.verticalStats ?? { totalCandidates: 0, totalVerified: 0, totalSynced: 0, totalFailed: 0, countriesProcessed: [], dropReasons: { noWebsite: 0, fetchFailed: 0, unverified: 0, duplicate: 0 } },
         verticalDone: true,
         verticalStats: inputData.verticalStats,
+        ...flowCtx(inputData),
       };
     }
     const runId = inputData.runId || `run-${Date.now()}`;
@@ -227,7 +241,7 @@ const intakeStep = createStep({
 
     const existing = loadCheckpoint<CrawlState>(runId, "intake");
     if (existing) {
-      return { runId, candidates: existing.candidates, stats: existing.stats, verticalDone: false, verticalStats: null };
+      return { runId, candidates: existing.candidates, stats: existing.stats, verticalDone: false, verticalStats: null, ...flowCtx(inputData) };
     }
 
     const allCandidates: RegistryCandidate[] = [];
@@ -294,7 +308,7 @@ const intakeStep = createStep({
     const state: CrawlState = { runId, candidates: allCandidates, verifiedLeads: [], stats };
     await saveCheckpoint(runId, "intake", state);
 
-    return { runId, candidates: allCandidates, stats, verticalDone: false, verticalStats: null };
+    return { runId, candidates: allCandidates, stats, verticalDone: false, verticalStats: null, ...flowCtx(inputData) };
   },
 });
 
@@ -335,7 +349,7 @@ const verifyStep = createStep({
   execute: async ({ inputData }) => {
     const { runId, candidates, stats } = inputData;
     if (inputData.verticalDone) {
-      return { runId, candidates: [], verifiedLeads: [], stats, verticalDone: true, verticalStats: inputData.verticalStats };
+      return { runId, candidates: [], verifiedLeads: [], stats, verticalDone: true, verticalStats: inputData.verticalStats, ...flowCtx(inputData) };
     }
 
     const existing = loadCheckpoint<CrawlState>(runId, "verify");
@@ -347,6 +361,7 @@ const verifyStep = createStep({
         stats: existing.stats,
         verticalDone: false,
         verticalStats: null,
+        ...flowCtx(inputData),
       };
     }
 
@@ -441,7 +456,7 @@ const verifyStep = createStep({
     };
     await saveCheckpoint(runId, "verify", state);
 
-    return { runId, candidates, verifiedLeads, stats, verticalDone: false, verticalStats: null };
+    return { runId, candidates, verifiedLeads, stats, verticalDone: false, verticalStats: null, ...flowCtx(inputData) };
   },
 });
 
@@ -464,12 +479,12 @@ const extractStep = createStep({
   execute: async ({ inputData }) => {
     const { runId, verifiedLeads, stats } = inputData;
     if (inputData.verticalDone) {
-      return { runId, verifiedLeads: [], stats, verticalDone: true, verticalStats: inputData.verticalStats };
+      return { runId, verifiedLeads: [], stats, verticalDone: true, verticalStats: inputData.verticalStats, ...flowCtx(inputData) };
     }
 
     const existing = loadCheckpoint<CrawlState>(runId, "extract");
     if (existing) {
-      return { runId, verifiedLeads: existing.verifiedLeads, stats: existing.stats, verticalDone: false, verticalStats: null };
+      return { runId, verifiedLeads: existing.verifiedLeads, stats: existing.stats, verticalDone: false, verticalStats: null, ...flowCtx(inputData) };
     }
 
     const leads = verifiedLeads as SyncLead[];
@@ -520,9 +535,44 @@ const extractStep = createStep({
     };
     await saveCheckpoint(runId, "extract", state);
 
-    return { runId, verifiedLeads: leads, stats, verticalDone: false, verticalStats: null };
+    return { runId, verifiedLeads: leads, stats, verticalDone: false, verticalStats: null, ...flowCtx(inputData) };
   },
 });
+
+/**
+ * Report the real run outcome to the engine (POST /inbound/run-complete).
+ * SYNC_URL points at the engine's /inbound/sync — the report lives one path
+ * segment over. Best-effort: if the report fails, the engine's housekeeping
+ * cron fails the run after 2h, so nothing spins forever.
+ */
+async function reportRunComplete(
+  input: { syncUrl?: string; syncSecret?: string; edgeRunId?: number },
+  state: "succeeded" | "failed",
+  stats: unknown,
+): Promise<void> {
+  const syncUrl = input.syncUrl ?? process.env["SYNC_URL"] ?? "";
+  if (!syncUrl || !input.edgeRunId) return;
+  const url = `${syncUrl.replace(/\/[^/]*$/, "")}/run-complete`;
+  const body = JSON.stringify({ runId: input.edgeRunId, state, stats });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(input.syncSecret ? { "X-AD-Sync": input.syncSecret } : {}),
+        },
+        body,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) return;
+    } catch {
+      /* best effort */
+    }
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+  console.error(`[crawl] run-complete report failed for edge run ${input.edgeRunId}`);
+}
 
 const finalizeStep = createStep({
   id: "finalize",
@@ -541,7 +591,7 @@ const finalizeStep = createStep({
     // Vertical pipeline already synced; report its stats.
     if (inputData.verticalDone && inputData.verticalStats) {
       const vs = inputData.verticalStats as any;
-      return {
+      const output = {
         runId,
         totalCandidates: vs.totalCandidates ?? 0,
         totalVerified: vs.totalVerified ?? 0,
@@ -555,6 +605,12 @@ const finalizeStep = createStep({
         },
         status: (vs.totalSynced ?? 0) > 0 ? "completed" : "completed-empty",
       };
+      void reportRunComplete(
+        { syncUrl: inputData.syncUrl, syncSecret: inputData.syncSecret, edgeRunId: inputData.edgeRunId },
+        "succeeded",
+        { ...output, vmMinutes: output.budgetUsed.vmMinutes },
+      );
+      return output;
     }
 
     if (leads.length > 0) {
@@ -587,7 +643,7 @@ const finalizeStep = createStep({
     }
     setProgress(runId, "finalize", leads.length, Math.max(leads.length, 1), "done");
 
-    return {
+    const output = {
       runId,
       totalCandidates: stats.totalCandidates,
       totalVerified: stats.totalVerified,
@@ -601,6 +657,12 @@ const finalizeStep = createStep({
       },
       status: stats.totalFailed > 0 ? "partial" : "completed",
     };
+    void reportRunComplete(
+      { syncUrl: inputData.syncUrl ?? process.env["SYNC_URL"], syncSecret: inputData.syncSecret, edgeRunId: inputData.edgeRunId },
+      "succeeded",
+      { ...output, vmMinutes: output.budgetUsed.vmMinutes },
+    );
+    return output;
   },
 });
 

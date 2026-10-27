@@ -20,6 +20,7 @@ export async function housekeepingCron(env: Record<string, unknown>, externalDb?
   leadsPruned: number;
   blacklistPruned: number;
   optedOutPurged: number;
+  staleRunsFailed: number;
   watermarkReset: boolean;
   skipped: boolean;
 }> {
@@ -101,10 +102,25 @@ export async function housekeepingCron(env: Record<string, unknown>, externalDb?
       }
     }
 
+    // Crawl runs are "running" until bi-core POSTs /inbound/run-complete. If
+    // the core dies mid-run (VM crash, OOM) the run would spin forever —
+    // fail it after 2h so the UI never shows a phantom in-flight crawl.
+    const staleCutoff = new Date(Date.now() - 2 * 3600_000).toISOString();
+    const staleRuns = db
+      .prepare(
+        `UPDATE crawl_runs
+         SET state = 'failed',
+             finished_at = ?,
+             stats = JSON_OBJECT('error', 'core did not report completion within 2h')
+         WHERE state = 'running' AND started_at < ?`
+      )
+      .run(new Date().toISOString(), staleCutoff);
+
     return {
       leadsPruned: prunedLeads.changes,
       blacklistPruned: prunedBlacklist.changes,
       optedOutPurged: purgedOptedOut.changes,
+      staleRunsFailed: staleRuns.changes,
       watermarkReset,
       skipped: false,
     };

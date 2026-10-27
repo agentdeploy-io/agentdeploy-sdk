@@ -19,6 +19,7 @@ export { CfSqlDatabase } from "./db/cf-sqlite.js";
 import { createHandler } from "@agentdeploy-io/edge-sdk";
 import { Supervisor, COMMANDS, parseCommand, handleCommand } from "./agents/supervisor.js";
 import { handleInboundSync } from "./routes/inbound-sync.js";
+import { handleRunComplete } from "./routes/inbound-run-complete.js";
 import { handleDataApi } from "./routes/data-api.js";
 import { handleInboundWebhook } from "./routes/inbound-webhook.js";
 import { handleManychatWebhook } from "./routes/inbound-manchat.js";
@@ -206,6 +207,7 @@ export class BiEdgeAgent {
         commands: COMMANDS,
         routes: [
           "POST /inbound/sync",
+          "POST /inbound/run-complete",
           "POST /inbound-webhook",
           "POST /inbound/manychat",
           "GET|POST /cmd/data*",
@@ -235,6 +237,10 @@ export class BiEdgeAgent {
 
     if (url.pathname === "/inbound/sync" && request.method === "POST") {
       return withCors(await handleInboundSync(request, env, db as any));
+    }
+
+    if (url.pathname === "/inbound/run-complete" && request.method === "POST") {
+      return withCors(await handleRunComplete(request, env, db as any));
     }
 
     if ((url.pathname === "/inbound-webhook" || url.pathname === "/inbound/webhook") && request.method === "POST") {
@@ -284,7 +290,7 @@ export class BiEdgeAgent {
         topology: "bi-edge",
         agents: ["supervisor", "qualifier", "researcher", "writer", "outreach"],
         crons: Object.keys(CRON_NAME_MAP),
-        routes: ["/inbound/sync", "/inbound-webhook", "/inbound/manychat", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/manychat", "/cmd/simulate-reply", "/cmd/traces"],
+        routes: ["/inbound/sync", "/inbound/run-complete", "/inbound-webhook", "/inbound/manychat", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/manychat", "/cmd/simulate-reply", "/cmd/traces"],
       }));
     }
 

@@ -104,7 +104,10 @@ describe("crawlCron vertical handoff", () => {
     const db = initDb();
     upsertVertical(db, sample({ perCountryLimit: 4, countries: ["uk", "ie"] }));
     const res = await crawlCron({ CORE_URL: "http://core.test" }, db, { verticalId: "v-test", trigger: "manual" });
-    expect(res.state).toBe("succeeded");
+    // The core runs the pipeline async and reports the real outcome via
+    // /inbound/run-complete — the run stays "running" until then.
+    expect(res.state).toBe("running");
+    expect(res.runId).toBeGreaterThan(0);
     const call = fetchSpy.mock.calls[0]!;
     expect(call[0]).toBe("http://core.test/v1/handoff");
     const body = JSON.parse((call[1] as { body: string }).body);
@@ -112,6 +115,7 @@ describe("crawlCron vertical handoff", () => {
     expect(body.countries).toEqual(["uk", "ie"]);
     expect(body.limit).toBe(8); // perCountryLimit × countries
     expect(body.trigger).toBe("manual");
+    expect(body.edgeRunId).toBe(res.runId); // run-complete reports key on it
     db.close();
   });
 
@@ -128,11 +132,12 @@ describe("crawlCron vertical handoff", () => {
     const db = initDb();
     db.prepare("INSERT INTO settings (key, value) VALUES ('countries', 'Ireland'), ('crawlLimit', '30')").run();
     const res = await crawlCron({ CORE_URL: "http://core.test" }, db);
-    expect(res.state).toBe("succeeded");
+    expect(res.state).toBe("running");
     const body = JSON.parse((fetchSpy.mock.calls[0]![1] as { body: string }).body);
     expect(body.vertical).toBeUndefined();
     expect(body.countries).toEqual(["ie"]);
     expect(body.limit).toBe(30);
+    expect(body.edgeRunId).toBe(res.runId);
     db.close();
   });
 

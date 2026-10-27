@@ -95,6 +95,19 @@ export function normalizePack(raw: Partial<VerticalPack> & { id: string; name: s
   };
 }
 
+/**
+ * Contact points by deliverability: a verified personal inbox is worth more
+ * than a role address, and MX-guessed info@/hello@ barely at all — the old
+ * flat +15 let guessed inboxes push leads over minScore with nothing real.
+ */
+function emailPoints(lead: SyncedLead): number {
+  const emails = lead.emails ?? [];
+  if (emails.some((e) => e.kind === "personal" && e.mx_ok !== false)) return 15;
+  if (emails.some((e) => e.kind !== "guessed")) return 10;
+  if (emails.length > 0) return 5;
+  return 0;
+}
+
 function scoreLead(
   lead: SyncedLead,
   verdict: "verified" | "flagged",
@@ -104,7 +117,7 @@ function scoreLead(
 ): number {
   let score = verdict === "verified" ? 40 : 25;
   score += hasLlm ? Math.round(relevance * 0.3) : 15;
-  if ((lead.emails ?? []).length > 0) score += 15;
+  score += emailPoints(lead);
   if ((lead.phones ?? []).length > 0) score += 10;
   if (lead.reg_number) score += 10;
   if (lead.sic && pack.sicInclude?.some((p) => lead.sic!.startsWith(p))) score += 5;

@@ -5,7 +5,7 @@
 
 import { verify, type PageContent, type RegistryInfo } from "../verification.js";
 import { extractContacts, validateMxRecords, CONTACT_PATHS } from "../extraction.js";
-import { fetchPageContent, fetchContactPages } from "./page.js";
+import { fetchPageContent, fetchContactPages, discoverSitemapContactUrls } from "./page.js";
 import { probeMonetization, smartFetch, type SmartFetchResult } from "./renderer.js";
 import { probeList, probeTechStack } from "./sources.js";
 import { llmJson, llmConfigured } from "./llm.js";
@@ -212,18 +212,26 @@ export async function enrichContacts(ctx: EnrichCtx, candidate: Candidate, home?
   if (!candidate.website) return lead;
 
   const paths = (CONTACT_PATHS[country] ?? CONTACT_PATHS["default"] ?? []).slice(0, 3);
+  const base = candidate.website.replace(/\/$/, "");
   let pages: PageContent[];
   if (home) {
     // Reuse the page the verify stage already fetched. SPAs get their
     // contact subpages rendered too — the shell would otherwise be empty.
     pages = [home.page];
-    const base = candidate.website.replace(/\/$/, "");
     for (const p of paths) {
-      const sub = home.rendered ? (await smartFetch(`${base}${p}`))?.page : await fetchPageContent(`${base}${p}`);
+      const sub = home.rendered ? (await smartFetch(`${base}${p}`))?.page : await fetchPageContent(`${base}${p}`, 60_000, { retries: 1 });
       if (sub) pages.push(sub);
     }
   } else {
     pages = await fetchContactPages(candidate.website, paths);
+  }
+
+  // Sitemap-discovered contact pages (team, legal, localized contact routes)
+  // — where personal emails usually live, beyond the fixed path list.
+  const sitemapUrls = await discoverSitemapContactUrls(base, paths);
+  for (const u of sitemapUrls) {
+    const sub = home?.rendered ? (await smartFetch(u))?.page : await fetchPageContent(u, 60_000, { retries: 1 });
+    if (sub && !pages.some((x) => x.url === sub.url)) pages.push(sub);
   }
   if (pages.length > 0) {
     const extraction = await extractContacts(

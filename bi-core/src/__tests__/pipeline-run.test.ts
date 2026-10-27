@@ -102,10 +102,11 @@ describe("runVerticalPack", () => {
     expect(stats.countriesProcessed).toEqual(["uk"]);
     expect(progress).toEqual(expect.arrayContaining(["discover:1/1", "verify:0/1", "enrich:0/1", "sync:0/1"]));
 
-    // Score: verified 40 + relevance 90*0.3=27 + email 15 + phone 10 + reg 10 + sic(none) = 100 cap
+    // Score: verified 40 + relevance 90*0.3=27 + role email 10 + phone 10 + reg 10 + sic(none) = 97
+    // (guessed inboxes are worth 5, personal+MX 15 — a role address is 10)
     expect(syncCallback).toHaveBeenCalledTimes(1);
     const synced = (syncCallback as AnyFn).mock.calls[0]![4] as Array<{ score: number; reg_number?: string }>;
-    expect(synced[0]?.score).toBe(100);
+    expect(synced[0]?.score).toBe(97);
     expect(synced[0]?.reg_number).toBe("123");
   });
 

@@ -361,7 +361,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   // Runs the crawl workflow; candidates come back async via /inbound/sync on
   // SYNC_URL (authenticated with SYNC_SECRET).
   if (req.method === "POST" && p === "/v1/handoff") {
-    let parsed: { countries?: string[]; limit?: number; trigger?: string; vertical?: Record<string, unknown> } = {};
+    let parsed: { countries?: string[]; limit?: number; trigger?: string; edgeRunId?: number; vertical?: Record<string, unknown> } = {};
     const raw = await readBody(req);
     if (raw) {
       try {
@@ -384,6 +384,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       syncUrl: process.env["SYNC_URL"] ?? "",
       syncSecret: process.env["SYNC_SECRET"] ?? "",
       runId: `edge-${Date.now()}`,
+      // The engine's crawl_runs row id — the run-complete report keys on it.
+      edgeRunId: Number.isInteger(Number(parsed.edgeRunId)) ? Number(parsed.edgeRunId) : undefined,
     };
     // A vertical pack switches the run to the behavior-driven pipeline.
     if (parsed.vertical && typeof parsed.vertical === "object") {

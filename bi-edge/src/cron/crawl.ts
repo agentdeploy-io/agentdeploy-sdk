@@ -117,6 +117,7 @@ export async function crawlCron(
           countries: codes,
           limit,
           trigger,
+          edgeRunId: runId,
           ...(vertical
             ? {
                 vertical: {
@@ -159,13 +160,16 @@ export async function crawlCron(
 
       const data = (await res.json()) as Record<string, unknown>;
 
+      // The core runs the pipeline asynchronously and reports the real
+      // outcome via POST /inbound/run-complete — until then the run stays
+      // "running" (marking it "succeeded" at queue time made the UI lie).
       updateCrawlRun(db, runId, {
-        finished_at: new Date().toISOString(),
-        state: "succeeded",
-        stats: JSON.stringify(data),
+        finished_at: null,
+        state: "running",
+        stats: JSON.stringify({ queued: true, ...data }),
       });
 
-      return { runId, state: "succeeded", skipped: false };
+      return { runId, state: "running", skipped: false };
     } catch (e: any) {
       updateCrawlRun(db, runId, {
         finished_at: new Date().toISOString(),

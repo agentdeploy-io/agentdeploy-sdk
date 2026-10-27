@@ -9,6 +9,7 @@ import { fetchPageContent } from "./page.js";
 import { llmConfigured, llmJson } from "./llm.js";
 import { harvestEE, harvestIE, harvestPT } from "../mastra/workflows/registry-intake.js";
 import { isCustomSource } from "./custom-sources.js";
+import { isLinkFailed, markLinkFailed } from "./negative-cache.js";
 
 export const SOURCE_IDS = ["dorks", "commoncrawl", "github", "urlscan", "defillama", "registry"] as const;
 export const PROBE_IDS = ["monetization", "techstack", "intent"] as const;
@@ -59,6 +60,14 @@ export async function commonCrawlLatestIndex(): Promise<string | null> {
   }
 }
 
+/** True when the CC crawl timestamp (YYYYMMDDHHMMSS) is within ~1 year. */
+function ccCrawlRecent(ts: string | undefined): boolean {
+  if (!ts || !/^\d{14}$/.test(ts)) return true; // unknown → keep
+  const d = new Date(`${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return true;
+  return Date.now() - d.getTime() <= 365 * 86_400_000;
+}
+
 function defaultCcFilters(pack: VerticalPack): string[] {
   const tld = COUNTRY_TLD[pack.countries[0] ?? "uk"] ?? "co.uk";
   const phrases = (pack.dorks ?? []).flatMap((d) => dorkPhrases(d)).slice(0, 3);
@@ -75,14 +84,17 @@ export async function discoverCommonCrawl(ctx: DiscoverCtx): Promise<SearchHit[]
   const seen = new Set<string>();
   for (const filter of filters.slice(0, 4)) {
     try {
-      const url = `https://index.commoncrawl.org/${index}-index?url=*&output=json&fl=url&filter=${encodeURIComponent(filter)}&limit=1000`;
+      // fl=url,timestamp — the timestamp lets us drop crawl-stale domains
+      // (the index is a URL graveyard; half of unfiltered hits are dead).
+      const url = `https://index.commoncrawl.org/${index}-index?url=*&output=json&fl=url,timestamp&filter=${encodeURIComponent(filter)}&limit=1000`;
       const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) continue;
       const lines = (await res.text()).trim().split("\n").filter(Boolean);
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line) as { url?: string };
+          const entry = JSON.parse(line) as { url?: string; timestamp?: string };
           if (!entry.url) continue;
+          if (!ccCrawlRecent(entry.timestamp)) continue;
           const u = new URL(entry.url);
           const host = u.hostname.replace(/^www\./, "").toLowerCase();
           if (!host || NOISE_HOST.test(host) || seen.has(host)) continue;
@@ -329,7 +341,7 @@ interface RegistryCompany {
 }
 
 const NON_SITE_HOST =
-  /(facebook\.com|linkedin\.com|instagram\.com|twitter\.com|x\.com|youtube\.com|tiktok\.com|glassdoor\.|yell\.com|192\.com|cylex\.|thomsonlocal|bark\.com|foursquare|wikipedia\.org|find-and-update\.company-information|companieshouse\.gov|service\.gov\.uk|maps\.google|yelp\.|trustpilot\.|craigslist\.|gov\.uk|in\.gov\.fr)/i;
+  /(facebook\.com|linkedin\.com|instagram\.com|twitter\.com|x\.com|youtube\.com|tiktok\.com|glassdoor\.|yell\.com|192\.com|cylex[-.]|thomsonlocal|bark\.com|foursquare|wikipedia\.org|find-and-update\.company-information|companieshouse\.gov|service\.gov\.uk|maps\.google|yelp\.|trustpilot\.|craigslist\.|gov\.uk|in\.gov\.fr)/i;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -545,6 +557,7 @@ export async function discoverRegistry(ctx: DiscoverCtx): Promise<Candidate[]> {
 
   const out: Candidate[] = [];
   const seenHost = new Set<string>();
+  let negSkipped = 0;
   for (const co of companies) {
     if (out.length >= limit) break;
     if (!co.name || co.name.length < 4) continue;
@@ -552,9 +565,19 @@ export async function discoverRegistry(ctx: DiscoverCtx): Promise<Candidate[]> {
     let website: string | undefined = co.website;
     if (!website) {
       if (!pack.requireWebsite) continue;
+      // Companies whose linking failed recently are remembered (30d) so cron
+      // runs stop re-burning Brave + LLM budget on permanent failures.
+      const negKey = co.regNumber || `name:${co.name.toLowerCase().replace(/\s+/g, " ")}`;
+      if (isLinkFailed(negKey)) {
+        negSkipped += 1;
+        continue;
+      }
       website = (await linkWebsite(ctx, co)) ?? undefined;
       if (out.length < 3) console.log("[registry] link", co.name, "->", website ?? "NONE");
-      if (!website) continue; // no_website — counted via the verify stage drop
+      if (!website) {
+        markLinkFailed(negKey);
+        continue; // no_website — counted via the verify stage drop
+      }
     }
     const host = (() => {
       try {
@@ -579,6 +602,7 @@ export async function discoverRegistry(ctx: DiscoverCtx): Promise<Candidate[]> {
       via: "registry",
     });
   }
+  if (negSkipped > 0) console.log(`[registry] skipped ${negSkipped} companies with recently failed website links (30d negative cache)`);
   return out;
 }
 
@@ -594,7 +618,7 @@ export function hitsToCandidates(country: string, hits: SearchHit[], via: string
       continue;
     }
     const root = rootDomain(host);
-    if (!root || seen.has(root)) continue;
+    if (!root || NOISE_HOST.test(root) || seen.has(root)) continue;
     seen.add(root);
     out.push({
       key: `${country}-${root}`,

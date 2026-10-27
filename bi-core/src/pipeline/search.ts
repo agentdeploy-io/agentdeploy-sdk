@@ -197,16 +197,21 @@ interface LlmJudgement {
   hits: Array<{ index: number; relevance: number; name?: string }>;
 }
 
-/** LLM judges raw SERP hits against the ICP and names the companies. */
-async function llmJudge(
+const JUDGE_CHUNK = 12;
+const JUDGE_MAX_CHUNKS = 3;
+
+/**
+ * LLM judges one chunk of raw SERP hits against the ICP and names the
+ * companies. On LLM failure the chunk's raw hits are kept — a judgment
+ * outage must not silently drop discovery output.
+ */
+async function llmJudgeChunk(
   env: Record<string, string>,
   pack: VerticalPack,
   query: string,
-  raw: SearchHit[],
+  chunk: SearchHit[],
 ): Promise<SearchHit[]> {
-  if (!llmConfigured(env) || raw.length === 0) return raw;
-  const list = raw
-    .slice(0, 12)
+  const list = chunk
     .map((h, i) => `${i}. ${h.url} — ${h.title} | ${h.description.slice(0, 140)}`)
     .join("\n");
   const out = await llmJson<
@@ -216,15 +221,32 @@ async function llmJudge(
     "You judge web-search results for B2B lead discovery. You are given the target ICP and raw SERP results. For each result that is plausibly a real business matching the ICP, return its index, a relevance score 0-100 (100 = obvious fit), and the company's name if identifiable from the result. Ignore directories, job boards, social profiles, news, and off-ICP businesses. STRICT JSON: {\"hits\":[{\"index\":number,\"relevance\":number,\"name\":string}]}.",
     `Target ICP: ${pack.icp}\nSearch query: ${query}\n\nResults:\n${list}`,
   );
-  if (!out.data) return raw;
+  if (!out.data) return chunk;
   const judged = out.data.hits
-    .filter((h) => typeof h.index === "number" && (h.relevance ?? 0) >= 40)
+    .filter((h) => typeof h.index === "number" && h.index >= 0 && h.index < chunk.length && (h.relevance ?? 0) >= 40)
     .map((h) => ({
-      ...(raw[h.index] as SearchHit),
+      ...(chunk[h.index!] as SearchHit),
       relevance: h.relevance ?? 0,
       name: h.name,
     }));
-  return judged;
+  // A judgment run that matched nothing keeps the raw hits — an over-strict
+  // pass must not empty a good result set.
+  return judged.length > 0 ? judged : chunk;
+}
+
+/** Judge every hit (chunked) instead of only the first 12. */
+async function llmJudge(
+  env: Record<string, string>,
+  pack: VerticalPack,
+  query: string,
+  raw: SearchHit[],
+): Promise<SearchHit[]> {
+  if (!llmConfigured(env) || raw.length === 0) return raw;
+  const out: SearchHit[] = [];
+  for (let i = 0; i < raw.length && i / JUDGE_CHUNK < JUDGE_MAX_CHUNKS; i += JUDGE_CHUNK) {
+    out.push(...(await llmJudgeChunk(env, pack, query, raw.slice(i, i + JUDGE_CHUNK))));
+  }
+  return out;
 }
 
 interface LlmGenerated {

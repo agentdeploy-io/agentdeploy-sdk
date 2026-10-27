@@ -266,6 +266,14 @@ export function findContactUrls(sitemapUrls: string[]): string[] {
     /legal/i,
     /privacy/i,
     /datenschutz/i,
+    // Localized + marketing contact routes the fixed path list misses.
+    /get[-_ ]?in[-_ ]?touch/i,
+    /reach[-_ ]?us/i,
+    /enquir/i,
+    /kontakt/i,
+    /contacto/i,
+    /nos(?:ous)?[-_ ]?contacter/i,
+    /fale[-_ ]?conosco/i,
   ];
   return sitemapUrls.filter((u) => patterns.some((p) => p.test(u)));
 }
