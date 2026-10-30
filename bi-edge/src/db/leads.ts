@@ -11,13 +11,13 @@ const UPSERT_SQL = `
   INSERT OR REPLACE INTO leads (
     key, country, name, reg_number, sic, sic_label, incorporated,
     address, city, website, website_status, website_evidence,
-    emails, phones, socials, source, source_url,
+    emails, phones, socials, contact_name, contact_role, source, source_url,
     stage, classification, research, pitch_subject, pitch_body,
     status, created_at, updated_at, last_sync_at, manychat_subscriber_id
   ) VALUES (
     @key, @country, @name, @reg_number, @sic, @sic_label, @incorporated,
     @address, @city, @website, @website_status, @website_evidence,
-    @emails, @phones, @socials, @source, @source_url,
+    @emails, @phones, @socials, @contact_name, @contact_role, @source, @source_url,
     @stage, @classification, @research, @pitch_subject, @pitch_body,
     @status, @created_at, @updated_at, @last_sync_at, @manychat_subscriber_id
   )
@@ -67,6 +67,8 @@ export function upsertLead(db: Database.Database, lead: Lead): void {
     emails: contactField(lead.emails),
     phones: contactField(lead.phones),
     socials: contactField(lead.socials),
+    contact_name: lead.contact_name ?? null,
+    contact_role: lead.contact_role ?? null,
     source: lead.source ?? null,
     source_url: lead.source_url ?? null,
     stage: lead.stage ?? "raw",

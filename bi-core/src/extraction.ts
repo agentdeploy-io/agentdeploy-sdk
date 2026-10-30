@@ -43,7 +43,7 @@ const EMAIL_BLACKLIST = [
   "contact@company",
 ];
 
-const ROLE_PREFIXES = new Set([
+export const ROLE_PREFIXES = new Set([
   "info",
   "hello",
   "contact",
@@ -160,7 +160,8 @@ export function extractEmails(html: string, text: string): string[] {
   }
 
   for (const m of `${text}\n${html}`.matchAll(EMAIL_RE)) {
-    let email = m[0].toLowerCase().trim();
+    // Strip leading percent-escapes (e.g. "mailto:%20x@y.com" rendered into text).
+    let email = m[0].toLowerCase().trim().replace(/^(?:%[0-9a-f]{2})+/, "");
     const at = email.lastIndexOf("@");
     const domain = email.slice(at + 1);
     const tldM = domain.match(TLD_RE);

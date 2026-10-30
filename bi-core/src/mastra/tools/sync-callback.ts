@@ -29,6 +29,8 @@ export interface SyncLead {
   emails?: Array<{ address: string; kind: string; mx_ok: boolean | null }>;
   phones?: string[];
   socials?: Record<string, string[]>;
+  contact_name?: string;
+  contact_role?: string;
   source: string;
   source_url?: string;
   stage?: string;
@@ -132,6 +134,8 @@ const syncLeadSchema = z.object({
   })).optional(),
   phones: z.array(z.string()).optional(),
   socials: z.record(z.array(z.string())).optional(),
+  contact_name: z.string().optional(),
+  contact_role: z.string().optional(),
   source: z.string(),
   source_url: z.string().optional(),
   stage: z.string().optional(),

@@ -96,6 +96,8 @@ export async function handleInboundSync(
     emails: toJsonField(l.emails),
     phones: toJsonField(l.phones),
     socials: toJsonField(l.socials),
+    contact_name: typeof l.contact_name === "string" && l.contact_name.trim() ? l.contact_name.trim() : null,
+    contact_role: typeof l.contact_role === "string" && l.contact_role.trim() ? l.contact_role.trim() : null,
     source: l.source ?? "sync",
     source_url: l.source_url ?? null,
     stage: l.stage ?? "raw",

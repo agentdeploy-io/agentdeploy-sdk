@@ -64,6 +64,8 @@ export interface Lead {
   emails?: string | null;
   phones?: string | null;
   socials?: string | null;
+  contact_name?: string | null;
+  contact_role?: string | null;
   source?: string | null;
   source_url?: string | null;
   stage: LeadStage;
@@ -93,6 +95,8 @@ export interface LeadPatch {
   emails?: string | null;
   phones?: string | null;
   socials?: string | null;
+  contact_name?: string | null;
+  contact_role?: string | null;
   source?: string | null;
   source_url?: string | null;
   stage?: LeadStage;

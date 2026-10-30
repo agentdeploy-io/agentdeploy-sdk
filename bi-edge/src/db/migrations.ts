@@ -41,6 +41,10 @@ const MIGRATIONS: Record<number, string> = {
     UPDATE leads SET phones = NULL WHERE phones IS NOT NULL AND phones LIKE '%[object Object]%';
     UPDATE leads SET socials = NULL WHERE socials IS NOT NULL AND socials LIKE '%[object Object]%';
   `,
+  6: `
+    ALTER TABLE leads ADD COLUMN contact_name TEXT;
+    ALTER TABLE leads ADD COLUMN contact_role TEXT;
+  `,
 };
 
 export function runMigrations(db: Database.Database): number {

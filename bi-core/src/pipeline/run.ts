@@ -255,6 +255,14 @@ export async function runVerticalPack(
         llmReason = out.reason;
         summary = out.summary;
         Object.assign(lead, out.patch);
+        // Merge the LLM's bestEmail into the existing list (never replace).
+        if (out.bestEmail) {
+          const existing = lead.emails ?? [];
+          const seen = new Set(existing.map((e) => e.address.toLowerCase()));
+          if (!seen.has(out.bestEmail.toLowerCase())) {
+            lead.emails = [...existing, { address: out.bestEmail, kind: "role", mx_ok: null }];
+          }
+        }
         if (hasLlm && relevance < 40) {
           drops.icp_mismatch += 1;
           continue;

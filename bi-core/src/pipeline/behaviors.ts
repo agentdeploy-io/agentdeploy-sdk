@@ -4,11 +4,12 @@
 // entry in run.ts; new vertical = new config, no pipeline code.
 
 import { verify, type PageContent, type RegistryInfo } from "../verification.js";
-import { extractContacts, validateMxRecords, CONTACT_PATHS } from "../extraction.js";
+import { extractContacts, validateMxRecords, CONTACT_PATHS, ROLE_PREFIXES } from "../extraction.js";
 import { fetchPageContent, fetchContactPages, discoverSitemapContactUrls } from "./page.js";
 import { probeMonetization, smartFetch, type SmartFetchResult } from "./renderer.js";
 import { probeList, probeTechStack } from "./sources.js";
 import { llmJson, llmConfigured } from "./llm.js";
+import type { ExtractedEmail } from "../types.js";
 import type {
   Candidate,
   DiscoverCtx,
@@ -239,6 +240,28 @@ export async function enrichContacts(ctx: EnrichCtx, candidate: Candidate, home?
       10,
       8,
     );
+    // LLM contact pass (before MX validation so LLM-found addresses get MX
+    // too): catches obfuscated/JS-assembled emails and names the person
+    // behind them — data regex cannot recover.
+    if (pack.llmEnrich && llmConfigured(ctx.env)) {
+      const llm = await extractContactsLlm(ctx.env, pages);
+      if (llm) {
+        const merged = mergeLlmContacts(extraction.emails, llm);
+        extraction.emails = sortPersonalFirst(merged.emails).slice(0, 10);
+        const phoneSet = new Set(extraction.phones);
+        for (const p of llm.phones ?? []) if (!phoneSet.has(p)) extraction.phones.push(p);
+        extraction.phones = extraction.phones.slice(0, 6);
+        // A named personal email wins; otherwise fall back to the named
+        // person on the page (e.g. the only doctor at a dental practice).
+        if (merged.contactName) {
+          lead.contact_name = merged.contactName;
+          lead.contact_role = merged.contactRole;
+        } else if (llm.contact?.name) {
+          lead.contact_name = llm.contact.name;
+          lead.contact_role = llm.contact.role;
+        }
+      }
+    }
     await validateMxRecords(extraction);
     lead.emails = extraction.emails.map((e) => ({ address: e.address, kind: e.kind, mx_ok: e.mx_ok }));
     lead.phones = extraction.phones;
@@ -275,6 +298,108 @@ async function mxOk(domain: string): Promise<boolean> {
   }
 }
 
+// ── enrich: LLM contact extraction (obfuscated emails + named people) ──────
+
+interface LlmContact {
+  address: string;
+  name?: string;
+  role?: string;
+}
+
+interface LlmContactsOut {
+  emails?: LlmContact[];
+  phones?: string[];
+  /** Person most worth addressing (named on the page), even without a named email. */
+  contact?: { name?: string; role?: string };
+}
+
+const CONTACT_ADDR_RE = /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/;
+
+/**
+ * Ask the LLM to read the rendered contact-page text and return the contact
+ * details it can find. The model is explicitly forbidden from inventing
+ * addresses — it may only report (or decode) what is present.
+ */
+export async function extractContactsLlm(env: Record<string, string>, pages: PageContent[]): Promise<LlmContactsOut | null> {
+  const text = pages
+    .map((p) => p.text)
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 4_000);
+  if (text.trim().length < 80) return null;
+  const out = await llmJson<LlmContactsOut>(
+    env,
+    "You extract contact details from a business website's pages. " +
+      "Return STRICT JSON: {\"emails\":[{\"address\":string,\"name\":string?,\"role\":string?}],\"phones\":[string],\"contact\":{\"name\":string?,\"role\":string?}}. " +
+      "Rules: include ONLY email addresses actually present in the text (decode obfuscated forms like " +
+      "'tom (at) firm (dot) co uk' when unambiguous) — never invent, guess or complete addresses. " +
+      "Set name/role on an email only when the text ties that person's name to the address. " +
+      "Include phone numbers only with their country code if one is shown. " +
+      "Set contact.name/role to the single most senior named person on the page (e.g. a named " +
+      "doctor, owner or director) — only if a real name is printed, never from an initial or a title alone. " +
+      "Omit any key you find nothing for.",
+    `Pages:\n${text}`,
+  );
+  if (!out.data) return null;
+  const d = out.data;
+  const emails: LlmContact[] = [];
+  for (const raw of Array.isArray(d.emails) ? d.emails : []) {
+    if (!raw || typeof raw.address !== "string") continue;
+    const address = raw.address.trim().toLowerCase().replace(/^(?:%[0-9a-f]{2})+/, "");
+    if (!CONTACT_ADDR_RE.test(address)) continue;
+    emails.push({
+      address,
+      name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 80) : undefined,
+      role: typeof raw.role === "string" && raw.role.trim() ? raw.role.trim().slice(0, 80) : undefined,
+    });
+    if (emails.length >= 8) break;
+  }
+  const phones = (Array.isArray(d.phones) ? d.phones : [])
+    .filter((p) => typeof p === "string" && p.replace(/\D/g, "").length >= 7)
+    .slice(0, 6);
+  const contact =
+    d.contact && typeof d.contact.name === "string" && d.contact.name.trim()
+      ? { name: d.contact.name.trim().slice(0, 80), role: typeof d.contact.role === "string" && d.contact.role.trim() ? d.contact.role.trim().slice(0, 80) : undefined }
+      : undefined;
+  if (emails.length === 0 && phones.length === 0 && !contact) return null;
+  return { emails, phones, contact };
+}
+
+function sortPersonalFirst(emails: ExtractedEmail[]): ExtractedEmail[] {
+  return [...emails].sort((a, b) =>
+    a.kind === "personal" && b.kind !== "personal" ? -1 : a.kind !== "personal" && b.kind === "personal" ? 1 : 0,
+  );
+}
+
+/**
+ * Merge LLM-found contacts into the regex extraction (pure, for tests).
+ * LLM adds addresses the regex missed; existing regex entries win on
+ * duplicates. A named, non-role address becomes the lead's contact person.
+ */
+export function mergeLlmContacts(
+  base: ExtractedEmail[],
+  llm: LlmContactsOut,
+): { emails: ExtractedEmail[]; contactName?: string; contactRole?: string } {
+  const emails = [...base];
+  const seen = new Set(base.map((e) => e.address.toLowerCase()));
+  let contactName: string | undefined;
+  let contactRole: string | undefined;
+  for (const e of llm.emails ?? []) {
+    const addr = e.address.toLowerCase();
+    if (seen.has(addr)) continue;
+    seen.add(addr);
+    const local = addr.split("@")[0] ?? "";
+    const isRoleLocal = ROLE_PREFIXES.has(local);
+    const kind: "role" | "personal" = e.name && !isRoleLocal ? "personal" : "role";
+    emails.push({ address: e.address, kind, mx_ok: null });
+    if (kind === "personal" && !contactName) {
+      contactName = e.name;
+      contactRole = e.role;
+    }
+  }
+  return { emails, contactName, contactRole };
+}
+
 // ── enrich: LLM (ICP relevance + pitch-ready summary + contact sanity) ─────
 
 interface LlmEnrichOut {
@@ -282,7 +407,6 @@ interface LlmEnrichOut {
   reason: string;
   summary: string;
   bestEmail?: string;
-  bestPhone?: string;
 }
 
 export async function enrichLlm(ctx: EnrichCtx, candidate: Candidate, homeText: string): Promise<{
@@ -290,6 +414,7 @@ export async function enrichLlm(ctx: EnrichCtx, candidate: Candidate, homeText: 
   reason: string;
   summary: string;
   patch: Partial<SyncedLead>;
+  bestEmail?: string;
 }> {
   const { pack, env } = ctx;
   const neutral = { relevant: 50, reason: "LLM unavailable", summary: "", patch: {} };
@@ -297,16 +422,16 @@ export async function enrichLlm(ctx: EnrichCtx, candidate: Candidate, homeText: 
 
   const out = await llmJson<LlmEnrichOut>(
     env,
-    "You are a B2B lead qualifier. Given a company's ICP profile and its website text, decide how well the company fits the ICP, and write a one- or two-sentence summary of what the company does (for a sales pitch). STRICT JSON: {\"relevant\":0-100,\"reason\":string,\"summary\":string,\"bestEmail\":string?,\"bestPhone\":string?}. bestEmail/bestPhone only if clearly present in the text.",
+    "You are a B2B lead qualifier. Given a company's ICP profile and its website text, decide how well the company fits the ICP, and write a one- or two-sentence summary of what the company does (for a sales pitch). STRICT JSON: {\"relevant\":0-100,\"reason\":string,\"summary\":string,\"bestEmail\":string?}. bestEmail only if clearly present in the text and not a placeholder.",
     `ICP: ${pack.icp}\n\nCompany: ${candidate.name}${candidate.city ? ` (${candidate.city})` : ""}\nWebsite: ${candidate.website ?? "n/a"}\n\nWebsite text:\n${homeText.slice(0, 3000)}`,
   );
 
   if (!out.data) return neutral;
   const d = out.data;
   const relevant = Math.max(0, Math.min(100, Number(d.relevant ?? 50)));
-  const patch: Partial<SyncedLead> = {};
-  if (d.bestEmail && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.bestEmail) && !(candidate.emails ?? []).some((e) => e.address === d.bestEmail)) {
-    patch.emails = [...(candidate.emails ?? []), { address: d.bestEmail, kind: "role", mx_ok: null }];
-  }
-  return { relevant, reason: String(d.reason ?? ""), summary: String(d.summary ?? ""), patch };
+  const bestEmail =
+    d.bestEmail && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.bestEmail)
+      ? d.bestEmail
+      : undefined;
+  return { relevant, reason: String(d.reason ?? ""), summary: String(d.summary ?? ""), patch: {}, bestEmail };
 }

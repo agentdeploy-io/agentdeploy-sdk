@@ -53,6 +53,7 @@ You analyze a business's evidence pack (services, tech stack, team size, client 
 
 Then write a cold email pitch (subject + body, 80-120 words) that:
 - Opens with ONE self-identification sentence: who you are${' '}(${`{agent name}, an AI agent built by {site}`}) and what the company builds (use the one-liner, lightly adapted)
+- If business.contact_name is provided, address that person by first name (e.g. "Hi Tom,") and use their role naturally; otherwise address the company generically
 - Then gives a specific observation about their business
 - Names ONE AI agent that solves their biggest pain
 - Proposes a 15-minute call
@@ -102,6 +103,8 @@ export async function runWriter(
               city: lead.city ?? "",
               sic: lead.sic ?? "",
               website: lead.website ?? "",
+              contact_name: lead.contact_name ?? "",
+              contact_role: lead.contact_role ?? "",
             },
             evidence,
           }),
@@ -120,7 +123,7 @@ export async function runWriter(
     stage: "write",
     leadKey: lead.key,
     model: String(env.AD_MODEL ?? ""),
-    promptExcerpt: JSON.stringify({ brand, business: { name: lead.name, sic: lead.sic ?? "", website: lead.website ?? "" }, evidence }),
+    promptExcerpt: JSON.stringify({ brand, business: { name: lead.name, sic: lead.sic ?? "", website: lead.website ?? "", contact_name: lead.contact_name ?? "" }, evidence }),
     rawResponse: JSON.stringify(raw),
     latencyMs: Date.now() - t0,
   });

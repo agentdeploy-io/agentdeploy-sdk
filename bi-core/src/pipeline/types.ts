@@ -29,6 +29,9 @@ export interface Candidate {
   emails?: Array<{ address: string; kind: string; mx_ok: boolean | null }>;
   phones?: string[];
   socials?: Record<string, string[]>;
+  /** Named person at the company (from the LLM contact pass) — pitch salutation. */
+  contact_name?: string;
+  contact_role?: string;
   research?: string;
   website_evidence?: string;
   stage?: string;

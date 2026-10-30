@@ -83,14 +83,18 @@ describe("sync contact-field serialization (P0 regression)", () => {
         emails: [{ address: "hello@probedesign.co.uk", kind: "role", mx_ok: true }],
         phones: ["+44 20 7946 0001"],
         socials: { linkedin: ["https://linkedin.com/company/probedesign"] },
+        contact_name: "Tom Smith",
+        contact_role: "Founder",
       },
     ]);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.accepted).toBe(1);
 
-    const emails = real.prepare("SELECT emails FROM leads WHERE key='uk/probe-1'").get() as { emails: string };
+    const emails = real.prepare("SELECT emails, contact_name, contact_role FROM leads WHERE key='uk/probe-1'").get() as { emails: string; contact_name: string | null; contact_role: string | null };
     expect(emails.emails).toBe(JSON.stringify([{ address: "hello@probedesign.co.uk", kind: "role", mx_ok: true }]));
+    expect(emails.contact_name).toBe("Tom Smith");
+    expect(emails.contact_role).toBe("Founder");
     const phones = real.prepare("SELECT phones FROM leads WHERE key='uk/probe-1'").get() as { phones: string };
     expect(phones.phones).toBe(JSON.stringify(["+44 20 7946 0001"]));
   });
