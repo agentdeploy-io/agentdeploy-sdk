@@ -45,6 +45,22 @@ const MIGRATIONS: Record<number, string> = {
     ALTER TABLE leads ADD COLUMN contact_name TEXT;
     ALTER TABLE leads ADD COLUMN contact_role TEXT;
   `,
+  7: `
+    CREATE TABLE IF NOT EXISTS bookings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lead_key TEXT NOT NULL,
+      customer_email TEXT NOT NULL,
+      start_at TEXT NOT NULL,
+      end_at TEXT NOT NULL,
+      title TEXT NOT NULL,
+      calendar_link TEXT,
+      google_event_id TEXT,
+      status TEXT NOT NULL DEFAULT 'confirmed',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bookings_lead ON bookings(lead_key);
+  `,
 };
 
 export function runMigrations(db: Database.Database): number {

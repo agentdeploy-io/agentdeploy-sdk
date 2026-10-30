@@ -92,4 +92,4 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;

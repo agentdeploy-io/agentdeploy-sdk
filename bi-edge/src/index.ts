@@ -45,6 +45,7 @@ import {
   getLead,
   isTestMode,
   getTestRecipient,
+  listBookings,
   listVerticals,
   getVertical,
   upsertVertical,
@@ -290,7 +291,7 @@ export class BiEdgeAgent {
         topology: "bi-edge",
         agents: ["supervisor", "qualifier", "researcher", "writer", "outreach"],
         crons: Object.keys(CRON_NAME_MAP),
-        routes: ["/inbound/sync", "/inbound/run-complete", "/inbound-webhook", "/inbound/manychat", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/manychat", "/cmd/simulate-reply", "/cmd/traces"],
+        routes: ["/inbound/sync", "/inbound/run-complete", "/inbound-webhook", "/inbound/manychat", "/cmd/data", "/cmd/settings", "/cmd/secrets", "/cmd/wire", "/cmd/schedules", "/cmd/campaign", "/cmd/manychat", "/cmd/simulate-reply", "/cmd/bookings", "/cmd/traces"],
       }));
     }
 
@@ -304,6 +305,10 @@ export class BiEdgeAgent {
 
     if (url.pathname === "/cmd/simulate-reply" && request.method === "POST") {
       return withCors(await this.handleSimulateReply(request, db, env));
+    }
+
+    if (url.pathname === "/cmd/bookings" && request.method === "GET") {
+      return withCors(json({ bookings: listBookings(db as any, 50) }));
     }
 
     if (url.pathname === "/cmd/traces" && request.method === "GET") {

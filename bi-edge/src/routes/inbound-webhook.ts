@@ -13,6 +13,9 @@ import {
 } from "../db/index.js";
 import type { ReplyIntent } from "../db/types.js";
 import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdeploy-io/edge-sdk";
+import { draftReplyWithBooking, bookingCalendarLink } from "../agents/reply-draft.js";
+import { insertBooking } from "../db/bookings.js";
+import { getFirstEmail } from "../agents/outreach.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -159,64 +162,6 @@ Return ONLY JSON: {"replies": [{"leadKey":"...","email":"...","intent":"...","pe
   }));
 }
 
-async function draftReply(
-  threads: Array<{
-    key: string;
-    name: string;
-    leadSubject: string;
-    replyFrom: string;
-    replySubject: string;
-    replyBody: string;
-  }>,
-   env: Record<string, unknown>,
-  db?: DatabaseType.Database,
-): Promise<Array<{ key: string; subject: string; body: string }>> {
-  const brandName = String(env.BRAND_NAME ?? "");
-  const calendly = String(env.CALENDLY_URL ?? "");
-  const t0 = Date.now();
-
-  const res = await gatewayFetchWithBackoff("/v1/chat/completions", {
-    method: "POST",
-    headers: gatewayHeaders(env),
-    body: JSON.stringify({
-      model: env.AD_MODEL ?? "openai/gpt-4o-mini",
-      temperature: 0.2,
-      max_tokens: 8192,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: `You are the brand's AI outreach agent replying to inbound email.
-Brand: ${brandName}. Calendly: ${calendly || "not available"}.
-For each thread write one short reply (40-80 words).
-Acknowledge what they wrote, answer directly, propose a next step.
-Never re-pitch, never quote pricing, never claim to be human.
-Return ONLY JSON: {"replies":[{"key":"...","subject":"Re: ...","body":"..."}]}`,
-        },
-        {
-          role: "user",
-          content: JSON.stringify({ brand: { name: brandName, calendly }, threads }),
-        },
-      ],
-    }),
-  }, { env });
-
-  if (!res.ok) return [];
-
-  const raw = parseLlmJson(await res.json());
-  if (db) {
-    logLlmTrace(db, {
-      stage: "reply-draft",
-      leadKey: threads.length === 1 ? threads[0].key : `${threads.length} threads`,
-      model: String(env.AD_MODEL ?? ""),
-      promptExcerpt: JSON.stringify(threads.map((t) => ({ key: t.key, leadSubject: t.leadSubject, replyBody: t.replyBody.slice(0, 200) }))),
-      rawResponse: JSON.stringify(raw),
-      latencyMs: Date.now() - t0,
-    });
-  }
-  return Array.isArray(raw.replies) ? raw.replies : [];
-}
-
 export async function handleInboundWebhook(
   request: Request,
   env: Record<string, unknown>,
@@ -343,9 +288,27 @@ export async function handleInboundWebhook(
     }
 
     let drafted = 0;
+    let booked = 0;
     if (draftThreads.length > 0) {
-      const drafts = await draftReply(draftThreads, env, db);
+      const { drafts, slots } = await draftReplyWithBooking(draftThreads, env, db);
+      const brandName = String(env.BRAND_NAME ?? "Agent Miles");
       for (const draft of drafts) {
+        let body = draft.body;
+        const lead = getLead(db, draft.key);
+        const slot = draft.slotIndex != null ? slots[draft.slotIndex] : undefined;
+        if (slot && lead) {
+          const link = bookingCalendarLink(lead.name, slot, brandName);
+          insertBooking(db, {
+            lead_key: draft.key,
+            customer_email: getFirstEmail(lead),
+            start_at: slot.start.toISOString(),
+            end_at: slot.end.toISOString(),
+            title: `Call: ${lead.name}`,
+            calendar_link: link,
+          });
+          body = `${body}\n\nBook it here — adds the meeting to your Google Calendar:\n${link}\n`;
+          booked++;
+        }
         const entry = db
           .prepare(
             "SELECT id FROM replies_log WHERE lead_key = ? AND draft_status IS NULL ORDER BY id DESC LIMIT 1"
@@ -354,7 +317,7 @@ export async function handleInboundWebhook(
         if (entry) {
           db.prepare(
             "UPDATE replies_log SET draft = ?, draft_status = 'pending' WHERE id = ?"
-          ).run(draft.body, entry.id);
+          ).run(body, entry.id);
           drafted++;
         }
       }
@@ -368,9 +331,11 @@ export async function handleInboundWebhook(
         interested,
         optOuts,
         drafted,
+        booked,
         note:
           matched > 0
-            ? `${drafted} reply draft(s) ready — /reply-list to review, /send-reply to send`
+            ? `${drafted} reply draft(s) ready — /reply-list to review, /send-reply to send` +
+              (booked > 0 ? ` (${booked} meeting(s) booked)` : "")
             : "No match to a sent lead",
       }),
       { headers: { "Content-Type": "application/json" } },
