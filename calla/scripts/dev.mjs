@@ -127,12 +127,35 @@ function brainLlmEnv() {
 // ── Service definitions ──────────────────────────────────────────
 const services = [];
 
+// The calla-edge worker declares a Workers AI binding, which in wrangler
+// 4.147+ is REMOTE-only: `wrangler dev` needs CF auth to boot with it. When
+// no auth is available, fall back to wrangler.dev.jsonc (same worker minus
+// the AI binding — the voice DO disables STT/TTS, everything else unchanged).
+function hasCfAuth() {
+  if (process.env.CLOUDFLARE_API_TOKEN) return true;
+  try {
+    execSync("npx --no-install wrangler whoami --output json", {
+      cwd: resolve(ROOT, "apps/edge"),
+      stdio: "pipe",
+      timeout: 20_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 if (!BRAIN_ONLY) {
+  const edgeArgs = ["wrangler", "dev", "--port", String(EDGE_PORT), "--ip", "127.0.0.1"];
+  if (!hasCfAuth()) {
+    devLog(`${COLORS.edge}no Cloudflare auth found — starting edge without the Workers AI binding (voice STT/TTS off). Run \`wrangler login\` for full voice.${COLORS.reset}`);
+    edgeArgs.push("--config", "wrangler.dev.jsonc");
+  }
   services.push({
     name: "edge",
     cwd: resolve(ROOT, "apps/edge"),
     cmd: "npx",
-    args: ["wrangler", "dev", "--port", String(EDGE_PORT), "--ip", "127.0.0.1"],
+    args: edgeArgs,
     readyUrl: `http://127.0.0.1:${EDGE_PORT}/health`,
     required: true,
   });
