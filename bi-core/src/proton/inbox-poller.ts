@@ -89,14 +89,21 @@ async function pollOnce(env: Record<string, string>, seen: SeenState, statePath:
   const host = env.PROTON_IMAP_HOST || "127.0.0.1";
   const port = Number(env.PROTON_IMAP_PORT || 1143);
   const folder = env.PROTON_INBOX_FOLDER || "INBOX";
-  const lookbackMin = Number(env.PROTON_LOOKBACK_MINUTES || 60);
   const webhookUrl = env.EDGE_WEBHOOK_URL || "http://127.0.0.1:8792/inbound-webhook";
+  // First run (no seen state) scans back further so replies that arrived
+  // before the poller was switched on are still picked up.
+  const lookbackMs =
+    Object.keys(seen.ids).length === 0
+      ? Number(env.PROTON_FIRST_LOOKBACK_HOURS || 24) * 3600 * 1000
+      : Number(env.PROTON_LOOKBACK_MINUTES || 60) * 60 * 1000;
 
   const conn = new ImapFlow({
     host,
     port,
     secure: false,
     auth: { user: env.PROTON_IMAP_USER, pass: env.PROTON_IMAP_PASSWORD },
+    // Proton Mail Bridge presents a self-signed certificate over STARTTLS.
+    tls: { rejectUnauthorized: false },
     logger: false,
   });
 
@@ -106,7 +113,7 @@ async function pollOnce(env: Record<string, string>, seen: SeenState, statePath:
   try {
     await conn.connect();
     await conn.mailboxOpen(folder, { readOnly: true });
-    const since = new Date(Date.now() - lookbackMin * 60 * 1000);
+    const since = new Date(Date.now() - lookbackMs);
     const seq = (await conn.search({ since }, { uid: true })) ?? [];
     if (!Array.isArray(seq) || seq.length === 0) return { checked: 0, forwarded: 0 };
 
@@ -159,7 +166,8 @@ async function pollOnce(env: Record<string, string>, seen: SeenState, statePath:
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ items }),
-        signal: AbortSignal.timeout(30_000),
+        // The webhook runs LLM classify (+ draft/booking) — give it room.
+        signal: AbortSignal.timeout(180_000),
       });
       if (res.ok) {
         forwarded = items.length;
