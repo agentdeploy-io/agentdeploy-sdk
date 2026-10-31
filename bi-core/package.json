@@ -35,6 +35,8 @@
     "adm-zip": "^0.5.10",
     "cheerio": "^1.0.0",
     "crawlee": "^3.12.0",
+    "imapflow": "^2.10.0",
+    "mailparser": "^3.14.1",
     "playwright": "^1.64.1",
     "zod": "^3.24.0"
   },

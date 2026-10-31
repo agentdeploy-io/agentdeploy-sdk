@@ -18,6 +18,7 @@ import { normalizePack } from "./pipeline/run.js";
 import { emptyDrops, emptyStats, type Candidate } from "./pipeline/types.js";
 import { loadCustomSources, getCustomSource, isCustomSource } from "./pipeline/custom-sources.js";
 import { generateScraper, testScraper, registerScraper, removeScraper, listScrapers } from "./scraper/service.js";
+import { startProtonPoller } from "./proton/inbox-poller.js";
 import type { CoreMessage } from "ai";
 
 // Dev convenience: load packages/bi-core/.env when present. Variables already
@@ -499,6 +500,8 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[bi-core] mastra server listening on :${PORT}`);
+  // Proton inbox reader (no-op unless PROTON_IMAP_* credentials are set).
+  startProtonPoller(process.env as Record<string, string>);
 });
 
 // Don't orphan the headless chromium when the server is restarted/killed.
