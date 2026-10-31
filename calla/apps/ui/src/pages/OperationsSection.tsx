@@ -1736,6 +1736,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
 
   const dryRun = settings?.dryRun === "true";
   const sendEnabled = settings?.sendEnabled === "true";
+  const autoSendReplies = settings?.autoSendReplies === "true";
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4 sm:p-6">
@@ -1908,6 +1909,15 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
             >
               {sendEnabled ? "Sending ENABLED" : "Sending disabled"}
             </Button>
+            <Button
+              size="sm"
+              variant={autoSendReplies ? "destructive" : "outline"}
+              onClick={() => setSendSetting("autoSendReplies", String(!autoSendReplies))}
+              disabled={settingsBusy}
+              aria-pressed={autoSendReplies}
+            >
+              {autoSendReplies ? "Auto-send replies ON" : "Auto-send replies OFF"}
+            </Button>
             <label className="flex items-center gap-1.5 text-[0.8125rem] text-muted-foreground">
               Daily cap
               <input
@@ -1944,6 +1954,11 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
               Dry-run is OFF but sending is disabled — emails will be blocked by the gate stack.
             </p>
           )}
+          <p className="text-[0.6875rem] text-muted-foreground">
+            {autoSendReplies
+              ? "Human-in-the-loop OFF — drafted replies are sent automatically when a reply is caught (still blocked by dry-run / sending-disabled / paused / daily cap)."
+              : "Human-in-the-loop ON — drafted replies wait in the Approvals inbox for you to send or discard."}
+          </p>
         </div>
       </Panel>
 

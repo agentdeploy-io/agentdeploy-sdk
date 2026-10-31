@@ -87,7 +87,7 @@ function initDb(env: Record<string, unknown>): Database.Database {
  * sendEnabled, the daily cap, pause, and lead opt-out state. Marks the
  * draft `sent` and the lead `replied` on success.
  */
-async function sendReplyDraft(
+export async function sendReplyDraft(
   db: Database.Database,
   id: number,
   env: Record<string, unknown>,

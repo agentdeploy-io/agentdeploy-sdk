@@ -226,6 +226,8 @@ export interface DefaultSettings {
   dmDryRun: boolean;
   dmEnabled: boolean;
   dmDailyCap: number;
+  /** Drafted email replies are sent immediately (human-in-the-loop off). */
+  autoSendReplies: boolean;
   [key: string]: boolean | number | string;
 }
 

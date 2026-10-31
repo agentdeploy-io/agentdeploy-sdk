@@ -8,6 +8,7 @@ import {
   logReply,
   listRecentSent,
   logLlmTrace,
+  isAutoSendReplies,
   SCHEMA_V1,
   runMigrations,
 } from "../db/index.js";
@@ -16,6 +17,7 @@ import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdep
 import { draftReplyWithBooking, bookingCalendarLink } from "../agents/reply-draft.js";
 import { insertBooking } from "../db/bookings.js";
 import { getFirstEmail } from "../agents/outreach.js";
+import { sendReplyDraft } from "../agents/supervisor.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -289,6 +291,8 @@ export async function handleInboundWebhook(
 
     let drafted = 0;
     let booked = 0;
+    let autoSent = 0;
+    const autoSend = isAutoSendReplies(db);
     if (draftThreads.length > 0) {
       const { drafts, slots } = await draftReplyWithBooking(draftThreads, env, db);
       const brandName = String(env.BRAND_NAME ?? "Agent Miles");
@@ -319,6 +323,24 @@ export async function handleInboundWebhook(
             "UPDATE replies_log SET draft = ?, draft_status = 'pending' WHERE id = ?"
           ).run(body, entry.id);
           drafted++;
+          if (autoSend) {
+            // HITL off — deliver the draft immediately (still honours the
+            // dryRun / sendEnabled / paused / cap gates inside).
+            try {
+              const result = await sendReplyDraft(db, entry.id, env);
+              const now = db
+                .prepare("SELECT draft_status FROM replies_log WHERE id = ?")
+                .get(entry.id) as { draft_status: string | null } | undefined;
+              if (now?.draft_status === "sent") {
+                autoSent++;
+                console.log(`[webhook] auto-sent reply ${entry.id}: ${result}`);
+              } else {
+                console.log(`[webhook] auto-send reply ${entry.id} held: ${result}`);
+              }
+            } catch (e) {
+              console.error(`[webhook] auto-send reply ${entry.id} failed: ${String(e)}`);
+            }
+          }
         }
       }
     }
@@ -332,10 +354,12 @@ export async function handleInboundWebhook(
         optOuts,
         drafted,
         booked,
+        autoSent,
         note:
           matched > 0
             ? `${drafted} reply draft(s) ready — /reply-list to review, /send-reply to send` +
-              (booked > 0 ? ` (${booked} meeting(s) booked)` : "")
+              (booked > 0 ? ` (${booked} meeting(s) booked)` : "") +
+              (autoSent > 0 ? ` (${autoSent} auto-sent)` : "")
             : "No match to a sent lead",
       }),
       { headers: { "Content-Type": "application/json" } },

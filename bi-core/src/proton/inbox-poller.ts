@@ -172,7 +172,7 @@ async function pollOnce(env: Record<string, string>, seen: SeenState, statePath:
       if (res.ok) {
         forwarded = items.length;
         const out = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-        log(`forwarded ${items.length} message(s) → matched=${out.matched ?? "?"} interested=${out.interested ?? "?"} booked=${out.booked ?? 0}`);
+        log(`forwarded ${items.length} message(s) → matched=${out.matched ?? "?"} interested=${out.interested ?? "?"} booked=${out.booked ?? 0} autoSent=${out.autoSent ?? 0}`);
       } else {
         log(`webhook returned ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
       }

@@ -8,11 +8,13 @@ import {
   getLead,
   logReply,
   listRecentSent,
+  isAutoSendReplies,
   SCHEMA_V1,
   runMigrations,
 } from "../db/index.js";
 import type { Lead, ReplyIntent } from "../db/types.js";
 import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdeploy-io/edge-sdk";
+import { sendReplyDraft } from "../agents/supervisor.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -178,6 +180,7 @@ export async function replyPollCron(env: Record<string, unknown>, externalDb?: D
   interested: number;
   optOuts: number;
   drafted: number;
+  autoSent: number;
   skipped: boolean;
 }> {
   const ownDb = !externalDb;
@@ -185,14 +188,14 @@ export async function replyPollCron(env: Record<string, unknown>, externalDb?: D
 
   try {
     if (isPaused(db)) {
-      return { received: 0, matched: 0, interested: 0, optOuts: 0, drafted: 0, skipped: true };
+      return { received: 0, matched: 0, interested: 0, optOuts: 0, drafted: 0, autoSent: 0, skipped: true };
     }
 
     const raw = await fetchBrevoInbound(env);
     const items = normalizeInbound(raw);
 
     if (items.length === 0) {
-      return { received: 0, matched: 0, interested: 0, optOuts: 0, drafted: 0, skipped: false };
+      return { received: 0, matched: 0, interested: 0, optOuts: 0, drafted: 0, autoSent: 0, skipped: false };
     }
 
     const sentLog = listRecentSent(db, 500);
@@ -266,6 +269,8 @@ export async function replyPollCron(env: Record<string, unknown>, externalDb?: D
     }
 
     let drafted = 0;
+    let autoSent = 0;
+    const autoSend = isAutoSendReplies(db);
     if (draftThreads.length > 0) {
       const drafts = await draftReply(draftThreads, env);
       for (const draft of drafts) {
@@ -279,6 +284,22 @@ export async function replyPollCron(env: Record<string, unknown>, externalDb?: D
             "UPDATE replies_log SET draft = ?, draft_status = 'pending' WHERE id = ?"
           ).run(draft.body, entry.id);
           drafted++;
+          if (autoSend) {
+            try {
+              const result = await sendReplyDraft(db, entry.id, env);
+              const now = db
+                .prepare("SELECT draft_status FROM replies_log WHERE id = ?")
+                .get(entry.id) as { draft_status: string | null } | undefined;
+              if (now?.draft_status === "sent") {
+                autoSent++;
+                console.log(`[reply-poll] auto-sent reply ${entry.id}: ${result}`);
+              } else {
+                console.log(`[reply-poll] auto-send reply ${entry.id} held: ${result}`);
+              }
+            } catch (e) {
+              console.error(`[reply-poll] auto-send reply ${entry.id} failed: ${String(e)}`);
+            }
+          }
         }
       }
     }
@@ -289,6 +310,7 @@ export async function replyPollCron(env: Record<string, unknown>, externalDb?: D
       interested,
       optOuts,
       drafted,
+      autoSent,
       skipped: false,
     };
   } finally {

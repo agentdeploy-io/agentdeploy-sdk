@@ -9,6 +9,7 @@ const DEFAULTS: DefaultSettings = {
   dmDryRun: true,
   dmEnabled: false,
   dmDailyCap: 10,
+  autoSendReplies: false,
 };
 
 const UPSERT_SETTING = `
@@ -98,6 +99,13 @@ export function getDailyCap(db: Database.Database): number {
 export function isDmDryRun(db: Database.Database): boolean {
   const raw = getSetting(db, "dmDryRun");
   if (raw === undefined) return DEFAULTS.dmDryRun;
+  return raw === "true";
+}
+
+/** When true, drafted email replies are sent immediately (HITL off). */
+export function isAutoSendReplies(db: Database.Database): boolean {
+  const raw = getSetting(db, "autoSendReplies");
+  if (raw === undefined) return DEFAULTS.autoSendReplies;
   return raw === "true";
 }
 
