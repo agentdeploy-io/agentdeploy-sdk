@@ -76,6 +76,8 @@ export interface UseApprovalsOptions {
 export interface ApprovalCounts {
   all: number;
   pending: number;
+  /** Decided approvals (sent / discarded) — the read-only history view. */
+  history: number;
   /** Pending approvals per source. */
   bySource: Record<ApprovalSource, number>;
   /** Pending approvals per risk level. */
@@ -386,11 +388,36 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
     }
   }, [deploymentId]);
 
+  // ── Reply history (sent + discarded drafts — read-only audit view) ──
+  const [replyHistory, setReplyHistory] = useState<Record<string, unknown>[]>([]);
+  const fetchReplyHistory = useCallback(async () => {
+    if (!deploymentId) {
+      setReplyHistory([]);
+      return;
+    }
+    try {
+      const res = await authFetch(`/d/${deploymentId}/cmd/replies?status=resolved&limit=50`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return;
+      const json = (await res.json()) as { replies?: Record<string, unknown>[] };
+      setReplyHistory((json.replies ?? []).map((r) => ({ ...r, key: String(r.id) })));
+    } catch {
+      // best effort — history is a nice-to-have
+    }
+  }, [deploymentId]);
+
   useEffect(() => {
     fetchReplyDrafts();
+    fetchReplyHistory();
     const interval = setInterval(fetchReplyDrafts, REPLY_DRAFT_POLL_MS);
-    return () => clearInterval(interval);
-  }, [fetchReplyDrafts, refreshKey]);
+    const historyInterval = setInterval(fetchReplyHistory, REPLY_DRAFT_POLL_MS * 2);
+    return () => {
+      clearInterval(interval);
+      clearInterval(historyInterval);
+    };
+  }, [fetchReplyDrafts, fetchReplyHistory, refreshKey]);
 
   const dataApprovals = useMemo<ApprovalRequest[]>(() => {
     const out: ApprovalRequest[] = [];
@@ -401,11 +428,48 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
     for (const row of websitePool.data.rows) {
       const ws = str(row.website_status)?.toLowerCase();
       if (!ws || !FLAGGED_WEBSITE_STATUSES.has(ws)) continue;
+      // Leads that are already decided must not keep re-appearing: the
+      // website flag is sticky, but a rejected/archived/opted-out lead is
+      // out of scope for review.
+      const st = str(row.status)?.toLowerCase();
+      const stage = str(row.stage)?.toLowerCase();
+      if (st === "rejected" || st === "opted_out" || st === "archived") continue;
+      if (stage === "archived" || stage === "opted_out") continue;
       const a = rowToApproval(row, { toolName: "review-website", risk: "low", deploymentId });
       if (a) out.push(a);
     }
     return out;
   }, [replyDrafts, websitePool.data.rows, deploymentId]);
+
+  // Decided reply drafts (sent / discarded) — read-only history entries.
+  const historyApprovals = useMemo<ApprovalRequest[]>(() => {
+    const out: ApprovalRequest[] = [];
+    for (const row of replyHistory) {
+      const key = String(row.id);
+      const sent = row.draft_status === "sent";
+      const from = str(row.reply_from);
+      const leadName = str(row.lead_name);
+      const draft = str(row.draft);
+      const snippet = draft
+        ? `“${draft.slice(0, 120)}${draft.length > 120 ? "…" : ""}”`
+        : "(no draft text)";
+      out.push({
+        id: `data:reply-history:${key}`,
+        source: "data",
+        agentId: deploymentId ?? "data-plane",
+        rowKey: key,
+        toolName: "review-reply",
+        arguments: row,
+        risk: "high",
+        requestedAt: rowTimestamp(row),
+        expiresAt: null,
+        status: sent ? "approved" : "declined",
+        summary: `${sent ? "Sent" : "Discarded"} reply${from ? ` from ${from}` : ""}${leadName ? ` — ${leadName}` : ""}: ${snippet}`,
+        ...(deploymentId ? { deploymentId } : {}),
+      });
+    }
+    return out;
+  }, [replyHistory, deploymentId]);
 
   const dataError = websitePool.error;
   const dataLoading = deploymentId ? websitePool.loading : false;
@@ -551,7 +615,13 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
 
   /** Deduped source-of-truth list (no optimistic overrides applied). */
   const baseApprovals = useMemo<ApprovalRequest[]>(() => {
-    const all = [...dataApprovals, ...coreApprovals, ...cloudflareApprovals, ...mastraApprovals];
+    const all = [
+      ...dataApprovals,
+      ...historyApprovals,
+      ...coreApprovals,
+      ...cloudflareApprovals,
+      ...mastraApprovals,
+    ];
 
     // Map-based dedupe — never emit two approvals for the same underlying
     // entity: source+rowKey (data rows), source+runId+toolCallId (brain),
@@ -562,7 +632,7 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
       if (!seen.has(key)) seen.set(key, a);
     }
     return Array.from(seen.values());
-  }, [dataApprovals, coreApprovals, cloudflareApprovals, mastraApprovals]);
+  }, [dataApprovals, historyApprovals, coreApprovals, cloudflareApprovals, mastraApprovals]);
 
   const merged = useMemo<ApprovalRequest[]>(() => {
     // Apply optimistic overrides non-mutatively, and only while the source
@@ -602,13 +672,17 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
     const bySource: Record<ApprovalSource, number> = { ...EMPTY_COUNTS_BY_SOURCE };
     const byRisk: Record<RiskLevel, number> = { ...EMPTY_COUNTS_BY_RISK };
     let pending = 0;
+    let history = 0;
     for (const a of merged) {
-      if (a.status !== "pending") continue;
+      if (a.status !== "pending") {
+        history += 1;
+        continue;
+      }
       pending += 1;
       bySource[a.source] += 1;
       byRisk[a.risk] += 1;
     }
-    return { all: merged.length, pending, bySource, byRisk };
+    return { all: merged.length, pending, history, bySource, byRisk };
   }, [merged]);
 
   // ─── decide ────────────────────────────────────────────────────
@@ -710,6 +784,7 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
         if (approval.source === "data" && approval.toolName === "review-reply") {
           // Draft left the pending set (sent/discarded) — pull it now.
           fetchReplyDrafts();
+          fetchReplyHistory();
         }
       } catch (err) {
         // Roll back + surface.
@@ -724,7 +799,7 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
         );
       }
     },
-    [updateRow, coreResumeTask, decideReplyDraft, fetchReplyDrafts],
+    [updateRow, coreResumeTask, decideReplyDraft, fetchReplyDrafts, fetchReplyHistory],
   );
 
   // ─── refetch ───────────────────────────────────────────────────

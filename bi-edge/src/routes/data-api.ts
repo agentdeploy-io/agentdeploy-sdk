@@ -493,7 +493,12 @@ function handleReplies(url: URL, externalDb?: DatabaseType.Database): Response {
     const status = url.searchParams.get("status");
     const limit = Math.min(Number(url.searchParams.get("limit")) || 100, 500);
     let rows;
-    if (status && status !== "pending") {
+    if (status === "resolved") {
+      // History view: everything that has been sent or discarded.
+      rows = listRecentReplies(db, limit).filter(
+        (r) => r.draft_status === "sent" || r.draft_status === "discarded"
+      );
+    } else if (status && status !== "pending") {
       // Full history path: reuse the recent list, then filter client-side.
       rows = listRecentReplies(db, limit).filter((r) => r.draft_status === status);
     } else {

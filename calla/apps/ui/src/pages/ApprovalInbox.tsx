@@ -60,6 +60,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ onNavigate }) => {
 
     return approvals.filter((a) => {
       if (tab === "pending" && a.status !== "pending") return false;
+      if (tab === "history" && a.status === "pending") return false;
       if (tab.startsWith("source:") && a.source !== tab.slice("source:".length)) return false;
       // Source tabs are pending queues — their badge counts pending only.
       if (tab.startsWith("source:") && a.status !== "pending") return false;
@@ -168,6 +169,7 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ onNavigate }) => {
     () => [
       { value: "all", label: "All", count: counts.all },
       { value: "pending", label: "Needs review", count: counts.pending },
+      { value: "history", label: "History", count: counts.history },
       ...SOURCE_TABS.map(({ source, label }) => ({
         value: `source:${source}`,
         label,
@@ -323,22 +325,26 @@ export const ApprovalInbox: React.FC<ApprovalInboxProps> = ({ onNavigate }) => {
         <Card>
           <EmptyState
             icon={<Inbox className="size-7 text-muted-foreground" />}
-            title={
-              filtersActive || query.trim()
-                ? "No approvals match those filters"
-                : tab === "pending"
-                  ? "All caught up"
-                  : tab === "all"
-                    ? "Nothing in the inbox"
-                    : `No pending ${tabs.find((t) => t.value === tab)?.label.toLowerCase() ?? "source"} approvals`
-            }
-            message={
-              filtersActive || query.trim()
-                ? "Loosen the risk chips or clear the search to see more of the queue."
-                : tab === "pending"
-                  ? "No automation steps awaiting approval — leads are reviewed in bulk under Data. New gates stream in live."
-                  : "Decided and expired gates are kept here for audit."
-            }
+              title={
+                filtersActive || query.trim()
+                  ? "No approvals match those filters"
+                  : tab === "pending"
+                    ? "All caught up"
+                    : tab === "history"
+                      ? "No decided approvals yet"
+                      : tab === "all"
+                        ? "Nothing in the inbox"
+                        : `No pending ${tabs.find((t) => t.value === tab)?.label.toLowerCase() ?? "source"} approvals`
+              }
+              message={
+                filtersActive || query.trim()
+                  ? "Loosen the risk chips or clear the search to see more of the queue."
+                  : tab === "pending"
+                    ? "No automation steps awaiting approval — leads are reviewed in bulk under Data. New gates stream in live."
+                    : tab === "history"
+                      ? "Approved and discarded reply drafts land here for audit once you decide them."
+                      : "Decided and expired gates are kept here for audit."
+              }
             action={
               filtersActive
                 ? {
