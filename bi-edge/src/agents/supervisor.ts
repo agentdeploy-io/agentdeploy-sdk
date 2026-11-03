@@ -48,6 +48,7 @@ import { runQualifier } from "./qualifier.js";
 import { runResearcher } from "./researcher.js";
 import { runWriter } from "./writer.js";
 import { runOutreach, sendViaBrevo, buildSignatureFooter, getFirstEmail, type GateResult } from "./outreach.js";
+import { sendCalendarInvite } from "./calendar-invite.js";
 
 type HitlState = {
   pendingApprovals: string[];
@@ -61,7 +62,7 @@ export const COMMANDS = [
   "/pause", "/resume", "/test-send", "/reply-list", "/send-reply", "/discard-reply",
   "/blacklist", "/blacklist-list", "/blacklist-remove", "/add-lead",
   "/blacklist-import", "/blacklist-export", "/pending",
-  "/approve-batch", "/export-csv", "/import-csv",
+  "/approve-batch", "/export-csv", "/import-csv", "/send-invite",
 ] as const;
 
 export function parseCommand(text: string): { cmd: string; args: string[] } {
@@ -329,6 +330,12 @@ export async function handleCommand(
       const id = Number(args[0]);
       if (!id) return "Usage: /send-reply <reply_log_id>";
       return sendReplyDraft(db, id, env);
+    }
+
+    case "/send-invite": {
+      const id = args[0] ? Number(args[0]) : null;
+      if (args[0] && !id) return "Usage: /send-invite [booking_id]";
+      return sendCalendarInvite(db, env, id);
     }
 
     case "/discard-reply": {

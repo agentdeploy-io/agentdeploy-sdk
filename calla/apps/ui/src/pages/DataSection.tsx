@@ -14,7 +14,7 @@
  */
 
 import * as React from "react";
-import { Check, Database, Download, RefreshCw, Upload, X } from "lucide-react";
+import { Check, Database, Download, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import {
   DataGrid,
   DetailPanel,
@@ -30,6 +30,7 @@ import { Badge, Button, Card, Dialog, Skeleton } from "@/components/ui";
 import {
   toast,
   useBulkAction,
+  useDeleteRows,
   useDeploymentSelector,
   useExportCsv,
   useImportCsv,
@@ -267,6 +268,8 @@ export const DataSection: React.FC<DataSectionProps> = () => {
 
   const { execute: executeBulk, loading: bulkLoading, error: bulkError } = useBulkAction(deploymentId);
   const { update: updateRow, loading: singleLoading } = useUpdateLead(deploymentId);
+  const { execute: deleteRows, loading: deleteLoading } = useDeleteRows(deploymentId);
+  const [deleteConfirmKeys, setDeleteConfirmKeys] = React.useState<string[] | null>(null);
   const { download: downloadCsv, loading: exportLoading } = useExportCsv(deploymentId);
   const { dryRunImport, confirmImport, reset: resetImport, loading: importLoading } =
     useImportCsv(deploymentId);
@@ -439,6 +442,20 @@ export const DataSection: React.FC<DataSectionProps> = () => {
       refetch();
     },
     [activeKey, updateRow, refetch],
+  );
+
+  const runDelete = React.useCallback(
+    async (keys: string[]) => {
+      const n = await deleteRows(keys);
+      setDeleteConfirmKeys(null);
+      if (n > 0) {
+        toast.success(`Deleted ${n} lead${n === 1 ? "" : "s"}`, "Removed permanently from the engine.");
+        setSelectedKeys(new Set());
+        setActiveKey(null);
+        refetch();
+      }
+    },
+    [deleteRows, refetch],
   );
 
   const clearFilters = React.useCallback(() => {
@@ -761,6 +778,15 @@ export const DataSection: React.FC<DataSectionProps> = () => {
                   Reject
                 </Button>
                 <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setDeleteConfirmKeys(Array.from(selectedKeys))}
+                  disabled={bulkLoading || deleteLoading}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete
+                </Button>
+                <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setSelectedKeys(new Set())}
@@ -873,6 +899,15 @@ export const DataSection: React.FC<DataSectionProps> = () => {
                 <X className="size-3.5" />
                 Reject
               </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setDeleteConfirmKeys(activeKey ? [activeKey] : null)}
+                disabled={deleteLoading}
+              >
+                <Trash2 className="size-3.5" />
+                Delete
+              </Button>
               <Button variant="ghost" size="sm" className="ml-auto" onClick={closeDrawer}>
                 Close
               </Button>
@@ -900,6 +935,30 @@ export const DataSection: React.FC<DataSectionProps> = () => {
             >
               <Check className="size-3.5" />
               {bulkLoading ? "Working…" : "Approve"}
+            </Button>
+          </>
+        }
+      />
+
+      {/* ─── Delete confirmation (hard delete) ────────────────── */}
+      <Dialog
+        open={deleteConfirmKeys !== null}
+        onClose={() => setDeleteConfirmKeys(null)}
+        title={`Delete ${deleteConfirmKeys?.length ?? 0} lead${(deleteConfirmKeys?.length ?? 0) === 1 ? "" : "s"}?`}
+        description="This permanently removes them from the engine — outreach, reply history and approvals for these leads stop showing. This cannot be undone."
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setDeleteConfirmKeys(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void runDelete(deleteConfirmKeys ?? [])}
+              disabled={deleteLoading}
+            >
+              <Trash2 className="size-3.5" />
+              {deleteLoading ? "Deleting…" : "Delete permanently"}
             </Button>
           </>
         }

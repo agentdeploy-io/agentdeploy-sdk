@@ -279,15 +279,28 @@ export function runGateStack(
 }
 
 export async function sendViaBrevo(
-  to: string,
+  to: string | string[],
   name: string,
   subject: string,
   html: string,
   env: Record<string, unknown>,
+  options?: { attachment?: { filename: string; contentBase64: string } },
 ): Promise<{ messageId: string }> {
   const apiKey = env.BREVO_API_KEY as string;
   const senderEmail = String(env.BREVO_SENDER_EMAIL ?? "noreply@example.com");
   const senderName = String(env.BRAND_NAME ?? "Outreach");
+
+  const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  const body: Record<string, unknown> = {
+    sender: { name: senderName, email: senderEmail },
+    to: recipients.map((email) => ({ email, name })),
+    subject,
+    htmlContent: html,
+  };
+  if (options?.attachment) {
+    // Brevo /v3/smtp/email: array of {name, content(base64)} objects.
+    body.attachment = [{ name: options.attachment.filename, content: options.attachment.contentBase64 }];
+  }
 
   const res = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
@@ -295,12 +308,7 @@ export async function sendViaBrevo(
       "Content-Type": "application/json",
       "api-key": apiKey,
     },
-    body: JSON.stringify({
-      sender: { name: senderName, email: senderEmail },
-      to: [{ email: to, name }],
-      subject,
-      htmlContent: html,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {

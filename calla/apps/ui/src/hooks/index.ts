@@ -75,6 +75,7 @@ export {
   useLeadDetail,
   useUpdateLead,
   useBulkAction,
+  useDeleteRows,
   useExportCsv,
   useImportCsv,
   usePipeline,

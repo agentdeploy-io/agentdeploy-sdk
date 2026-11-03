@@ -101,6 +101,10 @@ export async function handleDataApi(
     return handleUpdateLead(request, externalDb);
   }
 
+  if (path === "/row" && request.method === "DELETE") {
+    return handleDeleteLead(url, externalDb);
+  }
+
   if (path === "/batch" && request.method === "POST") {
     return handleBatchUpdate(request, externalDb);
   }
@@ -220,6 +224,31 @@ async function handleUpdateLead(request: Request, externalDb?: DatabaseType.Data
     return new Response(JSON.stringify({ updated: success }), {
       headers: { "Content-Type": "application/json" },
     });
+  } catch (e: any) {
+    if (own) db.close();
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+function handleDeleteLead(url: URL, externalDb?: DatabaseType.Database): Response {
+  const key = url.searchParams.get("key");
+  if (!key) {
+    return new Response(JSON.stringify({ error: "key query param required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  const { db, own } = useDb(externalDb);
+  try {
+    const deleted = deleteLead(db, key);
+    if (own) db.close();
+    return new Response(
+      JSON.stringify({ deleted, key }),
+      { status: deleted ? 200 : 404, headers: { "Content-Type": "application/json" } },
+    );
   } catch (e: any) {
     if (own) db.close();
     return new Response(JSON.stringify({ error: e.message }), {

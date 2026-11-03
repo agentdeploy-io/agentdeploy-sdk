@@ -10,6 +10,7 @@ const DEFAULTS: DefaultSettings = {
   dmEnabled: false,
   dmDailyCap: 10,
   autoSendReplies: false,
+  bookingInviteTo: "",
 };
 
 const UPSERT_SETTING = `

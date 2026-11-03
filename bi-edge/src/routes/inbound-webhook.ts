@@ -15,9 +15,10 @@ import {
 import type { ReplyIntent } from "../db/types.js";
 import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdeploy-io/edge-sdk";
 import { draftReplyWithBooking, bookingCalendarLink } from "../agents/reply-draft.js";
-import { insertBooking } from "../db/bookings.js";
+import { insertBooking, findExistingBooking } from "../db/bookings.js";
 import { getFirstEmail } from "../agents/outreach.js";
 import { sendReplyDraft } from "../agents/supervisor.js";
+import { sendCalendarInvite } from "../agents/calendar-invite.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -302,15 +303,25 @@ export async function handleInboundWebhook(
         const slot = draft.slotIndex != null ? slots[draft.slotIndex] : undefined;
         if (slot && lead) {
           const link = bookingCalendarLink(lead.name, slot, brandName);
-          insertBooking(db, {
-            lead_key: draft.key,
-            customer_email: getFirstEmail(lead),
-            start_at: slot.start.toISOString(),
-            end_at: slot.end.toISOString(),
-            title: `Call: ${lead.name}`,
-            calendar_link: link,
-          });
-          body = `${body}\n\nBook it here — adds the meeting to your Google Calendar:\n${link}\n`;
+          const existing = findExistingBooking(db, draft.key, slot.start.toISOString());
+          if (existing) {
+            body = `${body}\n\nBook it here — adds the meeting to your Google Calendar:\n${link}\n`;
+          } else {
+            const bookingId = insertBooking(db, {
+              lead_key: draft.key,
+              customer_email: getFirstEmail(lead),
+              start_at: slot.start.toISOString(),
+              end_at: slot.end.toISOString(),
+              title: `Call: ${lead.name}`,
+              calendar_link: link,
+            });
+            // Real .ics invite to customer + operator (best effort — never
+            // block the draft flow on the invite send).
+            sendCalendarInvite(db, env, bookingId)
+              .then((r) => console.log(`[webhook] calendar invite: ${r}`))
+              .catch((e) => console.error(`[webhook] calendar invite failed: ${String(e)}`));
+            body = `${body}\n\nBook it here — adds the meeting to your Google Calendar:\n${link}\n`;
+          }
           booked++;
         }
         const entry = db

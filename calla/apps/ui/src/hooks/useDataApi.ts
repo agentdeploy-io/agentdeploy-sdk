@@ -304,6 +304,47 @@ export function useBulkAction(deploymentId?: string) {
   return { execute, loading, error };
 }
 
+// ─── useDeleteRows ───────────────────────────────────────────────
+
+/**
+ * DELETE /cmd/data/row?key=… per row. Hard delete: the lead (and any
+ * approvals derived from it) disappear permanently. Resolves to the number
+ * of deleted rows.
+ */
+export function useDeleteRows(deploymentId?: string) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const execute = useCallback(async (keys: string[]): Promise<number> => {
+    if (!deploymentId || keys.length === 0) return 0;
+    setLoading(true);
+    setError(null);
+    let deleted = 0;
+    try {
+      const results = await Promise.allSettled(
+        keys.map((key) =>
+          authFetch(`${proxyBase(deploymentId)}/cmd/data/row?key=${encodeURIComponent(key)}`, {
+            method: "DELETE",
+            signal: AbortSignal.timeout(10000),
+          }).then((res) => (res.ok ? 1 : 0)),
+        ),
+      );
+      deleted = results.reduce((n, r) => n + (r.status === "fulfilled" ? r.value : 0), 0);
+      if (deleted < keys.length) {
+        setError(`${keys.length - deleted} row(s) could not be deleted`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+      handleNetworkError("Delete leads", err);
+    } finally {
+      setLoading(false);
+    }
+    return deleted;
+  }, [deploymentId]);
+
+  return { execute, loading, error };
+}
+
 // ─── useExportCsv ────────────────────────────────────────────────
 
 export function useExportCsv(deploymentId?: string) {

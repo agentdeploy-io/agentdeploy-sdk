@@ -9,8 +9,18 @@ const SELECT_BY_LEAD = `
   SELECT * FROM bookings WHERE lead_key = ? ORDER BY id DESC
 `;
 
+const SELECT_BY_ID = `
+  SELECT * FROM bookings WHERE id = ?
+`;
+
 const SELECT_RECENT = `
   SELECT * FROM bookings ORDER BY id DESC LIMIT ?
+`;
+
+const SELECT_EXISTING_SLOT = `
+  SELECT id FROM bookings
+  WHERE lead_key = ? AND start_at = ? AND status != 'cancelled'
+  LIMIT 1
 `;
 
 export function insertBooking(
@@ -48,4 +58,18 @@ export function listBookingsByLead(db: Database.Database, leadKey: string): Reco
 
 export function listBookings(db: Database.Database, limit = 50): Record<string, unknown>[] {
   return db.prepare(SELECT_RECENT).all(limit) as Record<string, unknown>[];
+}
+
+export function getBookingById(db: Database.Database, id: number): Record<string, unknown> | undefined {
+  return db.prepare(SELECT_BY_ID).get(id) as Record<string, unknown> | undefined;
+}
+
+/** Dedupe guard: an active booking for the same lead + start slot. */
+export function findExistingBooking(
+  db: Database.Database,
+  leadKey: string,
+  startAt: string,
+): number | null {
+  const row = db.prepare(SELECT_EXISTING_SLOT).get(leadKey, startAt) as { id: number } | undefined;
+  return row ? row.id : null;
 }
