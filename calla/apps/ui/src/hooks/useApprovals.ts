@@ -16,11 +16,15 @@
  *                      decide() → useUpdateLead patch.
  *   2. "core"       — core VM tasks awaiting input (state: awaiting_input)
  *                      via useCoreDeployment. decide() → resumeTask.
- *   3. "cloudflare" — edge agent HITL gates: live/replayed calla:approval:*
- *                      frames from useCallaEvents + pendingApprovals from
- *                      agent DO state (pass `agentStates` from
- *                      useAgentConnection when a page has one open).
- *                      decide() → edge-client decideApproval.
+ *   3. "cloudflare" — edge agent HITL gates. The DURABLE agent DO state
+ *                      (`agentStates` → state.pendingApprovals, authoritative
+ *                      status incl. decided gates) is the source of truth;
+ *                      live/replayed calla:approval:* frames from
+ *                      useCallaEvents are a push channel that may only add
+ *                      ids the loaded snapshot lacks (they carry no status,
+ *                      so replayed request frames must never resurrect a
+ *                      decided gate after a refresh). decide() →
+ *                      edge-client decideApproval.
  *   4. "mastra"     — brain suspended runs, polled every 5s via
  *                      mastra-client (plain useEffect+setInterval — works
  *                      WITHOUT a QueryClientProvider). decide() →
@@ -533,31 +537,43 @@ export function useApprovals(options: UseApprovalsOptions = {}): UseApprovalsRes
 
   const cloudflareApprovals = useMemo<ApprovalRequest[]>(() => {
     const byKey = new Map<string, ApprovalRequest>();
+    const stateLoadedFor = new Set<string>();
 
-    // (a) Live/replayed calla:approval:request frames.
-    for (const evt of callaEvents.events) {
-      if (evt.type !== "approval_request") continue;
-      const a = eventPayloadToApproval(asRecord(evt.payload), evt.agentId, deploymentId);
-      if (a) byKey.set(a.approvalId ?? a.id, a);
-    }
-
-    // (b) pendingApprovals from agent DO states (when a page passes them in).
+    // (a) Durable DO state — the SOURCE OF TRUTH for every agent whose
+    //     snapshot loaded: pendingApprovals carries the authoritative status
+    //     (decided gates keep their terminal status), so a decided gate can
+    //     never resurrect from a replayed request frame after a refresh.
     if (agentStates) {
       for (const [agentId, state] of Object.entries(agentStates)) {
+        stateLoadedFor.add(agentId);
         const pending = state?.pendingApprovals;
         if (!Array.isArray(pending)) continue;
         for (const item of pending) {
           const p = asRecord(item) as unknown as PendingApproval;
           if (!p?.id) continue;
-          // Frames win over (possibly staler) DO state snapshots.
-          if (!byKey.has(p.id)) {
-            byKey.set(p.id, pendingApprovalToApproval(p, agentId, deploymentId));
-          }
+          byKey.set(p.id, pendingApprovalToApproval(p, agentId, deploymentId));
         }
       }
     }
 
-    // Apply resolved frames.
+    // (b) Live/replayed calla:approval:request frames — the push channel.
+    //     They carry no status of their own ("pending" by construction).
+    //     For an agent whose state snapshot loaded, a frame may only add an
+    //     id the snapshot lacks (fresh gate requested after the snapshot was
+    //     taken — the next poll folds it in with its real status). For agents
+    //     without a loaded snapshot, frames remain the best-effort source.
+    for (const evt of callaEvents.events) {
+      if (evt.type !== "approval_request") continue;
+      const a = eventPayloadToApproval(asRecord(evt.payload), evt.agentId, deploymentId);
+      if (!a) continue;
+      const key = a.approvalId ?? a.id;
+      if (byKey.has(key)) continue;
+      if (stateLoadedFor.size > 0 && a.agentId && stateLoadedFor.has(a.agentId)) continue;
+      byKey.set(key, a);
+    }
+
+    // (c) Resolved frames pin terminal statuses (covers agents whose state
+    //     fetch failed and the decision happened in this session).
     for (const a of byKey.values()) {
       const key = a.approvalId ?? a.id;
       const resolved = resolvedByFrame.get(key);

@@ -349,6 +349,17 @@ async function fetch(
             updatedArgs: parsed.data.updatedArgs,
           })
         : await agent.declinePendingAction({ approvalId });
+      // Never mask a no-op as success: an unknown/stale approvalId means the
+      // decision did NOT change anything — the UI must roll back + toast.
+      if (result.status === "failed") {
+        return json(
+          { error: result.error ?? "decision_failed", detail: "approval not found on this agent" },
+          result.error === "unknown_approval" ? 404 : 409,
+        );
+      }
+      if (result.status === "expired") {
+        return json({ error: "approval_expired", detail: "this gate already expired" }, 409);
+      }
       return json(result);
     }
 

@@ -35,6 +35,21 @@ export interface ExpiryResult {
 const DEFAULT_TIMEOUT_MS = 86_400_000; // 24h
 const HUB_NAME = "hub";
 
+/** Deterministic JSON (recursively key-sorted) for step-param identity. */
+function canonicalParams(value: unknown): string {
+  const canonicalize = (v: unknown): unknown =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.keys(v as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, canonicalize((v as Record<string, unknown>)[k])]),
+        )
+      : Array.isArray(v)
+        ? v.map(canonicalize)
+        : v;
+  return JSON.stringify(canonicalize(value));
+}
+
 /**
  * CallaEdgeAgent — one Durable Object per edge agent identity.
  *
@@ -167,7 +182,25 @@ export class CallaEdgeAgent extends Agent<Env, CallaState> {
 
   // ── HITL internals ─────────────────────────────────────────────────────────
 
+  /**
+   * Two steps gate the same work when they share an id, or an action with
+   * canonically-equal params — re-running such a step while its gate is still
+   * PENDING must return the existing gate, not open a duplicate (a declined
+   * gate is terminal, so a later re-run correctly opens a fresh one).
+   */
+  private sameGatedStep(a: CallaStep, b: CallaStep): boolean {
+    if (a.id && a.id === b.id) return true;
+    return a.action === b.action && canonicalParams(a.params) === canonicalParams(b.params);
+  }
+
   private async requestApproval(step: CallaStep): Promise<StepResult> {
+    const existing = this.state.pendingApprovals.find(
+      (a) => a.status === "pending" && this.sameGatedStep(a.step, step),
+    );
+    if (existing) {
+      return { status: "awaiting_approval", stepId: step.id, approvalId: existing.id };
+    }
+
     const timeoutMs = step.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const approval: PendingApproval = {
       id: crypto.randomUUID(),
