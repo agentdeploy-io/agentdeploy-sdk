@@ -49,6 +49,7 @@ import { resolveDynamicAgent } from "../mastra/dynamic-agents.js";
 import { BookingStore, DEFAULT_TIMEZONE } from "../booking/store.js";
 import { getFreshConnection, readBookingConfig } from "../booking/oauth.js";
 import { googleCreateEvent } from "../booking/providers/google.js";
+import { googleCalendarTemplateUrl } from "../booking/providers/shared.js";
 import { msCreateEvent } from "../booking/providers/microsoft.js";
 import {
   buildBookingProposalText,
@@ -708,7 +709,16 @@ export async function getActiveRun(
 // ─── Post-booking confirmation ───────────────────────────────────
 
 export type BookResult =
-  | { ok: true; appointment: Appointment; link?: string; run: FlowRun }
+  | {
+      ok: true;
+      appointment: Appointment;
+      link?: string;
+      /** Google Meet join link created with the event, when the provider supports it. */
+      meetingUrl?: string;
+      /** One-click "Add to Google Calendar" URL for the attendee. */
+      addToCalendarUrl?: string;
+      run: FlowRun;
+    }
   | { ok: false; error: string; status: number; link?: string };
 
 /**
@@ -832,7 +842,25 @@ export async function bookRunSlot(
         : "webLink" in created && created.webLink
           ? created.webLink
           : undefined;
-    return { ok: true, appointment, ...(link ? { link } : {}), run };
+    const meetingUrl =
+      "meetingUrl" in created && created.meetingUrl ? created.meetingUrl : appointment.meetingUrl;
+    const addToCalendarUrl = googleCalendarTemplateUrl({
+      title: appointment.title,
+      startIso: appointment.start,
+      endIso: appointment.end,
+      timezone,
+      ...(meetingUrl
+        ? { location: meetingUrl, details: `Join video call:\n${meetingUrl}` }
+        : {}),
+    });
+    return {
+      ok: true,
+      appointment: meetingUrl ? { ...appointment, meetingUrl } : appointment,
+      ...(link ? { link } : {}),
+      ...(meetingUrl ? { meetingUrl } : {}),
+      addToCalendarUrl,
+      run,
+    };
   } catch (err) {
     return {
       ok: false,

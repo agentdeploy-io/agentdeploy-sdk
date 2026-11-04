@@ -566,6 +566,8 @@ export function createBookingApp(deps: BookingAppDeps): Hono {
         {
           appointment: result.appointment,
           ...(result.link ? { link: result.link } : {}),
+          ...(result.meetingUrl ? { meetingUrl: result.meetingUrl } : {}),
+          ...(result.addToCalendarUrl ? { addToCalendarUrl: result.addToCalendarUrl } : {}),
         },
         201,
       );

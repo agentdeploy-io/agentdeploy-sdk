@@ -34,6 +34,7 @@ import {
   getExternalCalendarMcp,
   type ExternalCalendarMcp,
 } from "./mcp-client.js";
+import { googleCalendarTemplateUrl } from "./providers/shared.js";
 import type { Rep } from "./types.js";
 
 export type BookingBackendMode = "native" | "mcp" | "both";
@@ -217,7 +218,19 @@ export class BookingBackend {
         via: "external-mcp",
       })
       .catch(() => {});
-    return { appointment };
+    const meetingUrl = appointment.meetingUrl;
+    return {
+      appointment,
+      ...(meetingUrl ? { meetingUrl } : {}),
+      addToCalendarUrl: googleCalendarTemplateUrl({
+        title: appointment.title,
+        startIso: appointment.start,
+        endIso: appointment.end,
+        ...(meetingUrl
+          ? { location: meetingUrl, details: `Join video call:\n${meetingUrl}` }
+          : {}),
+      }),
+    };
   }
 }
 

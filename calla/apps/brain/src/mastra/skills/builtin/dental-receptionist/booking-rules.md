@@ -25,6 +25,12 @@ with the final time."
 
 ## Confirmation
 - Always read back: visit type, day, time, location.
+- Include the links from the `book_appointment` result VERBATIM — never
+  invent, shorten, or reformat them:
+  - `meetingUrl` → "Join video call: <meetingUrl>"
+  - `addToCalendarUrl` → "Add to Google Calendar: <addToCalendarUrl>"
+  If the result has no `meetingUrl`, do not offer a video call — offer the
+  phone number instead.
 - Remind: bring ID and insurance card; arrive 10 minutes early.
 - If booking fails (slot taken, no calendar connected), apologize and offer
   the next best option or a callback — never promise a slot you don't have.

@@ -83,6 +83,8 @@ export interface Appointment {
   context?: BookingContext;
   status: AppointmentStatus;
   createdAt: string;
+  /** Video-call join URL (Google Meet hangoutLink) when the provider created one. */
+  meetingUrl?: string;
 }
 
 /** OAuth token material for a connected Google/Microsoft account. */

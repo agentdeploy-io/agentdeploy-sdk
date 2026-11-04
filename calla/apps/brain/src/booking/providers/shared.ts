@@ -14,6 +14,38 @@ export function appointmentTitle(attendeeName: string): string {
   return `Survey — ${attendeeName}`;
 }
 
+/** ISO-8601 UTC → Google Calendar "dates" segment (20261105T153000Z). */
+function gcalDateStamp(iso: string): string {
+  return new Date(Date.parse(iso))
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * Deterministic "Add to Google Calendar" deep link (no API needed): opens a
+ * pre-filled event dialog in the ATTENDEE's own Google account. Used for the
+ * confirmation email so the one-click add carries the meeting link too.
+ */
+export function googleCalendarTemplateUrl(input: {
+  title: string;
+  startIso: string;
+  endIso: string;
+  timezone?: string;
+  location?: string;
+  details?: string;
+}): string {
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: input.title,
+    dates: `${gcalDateStamp(input.startIso)}/${gcalDateStamp(input.endIso)}`,
+    ...(input.timezone ? { ctz: input.timezone } : {}),
+    ...(input.details ? { details: input.details } : {}),
+    ...(input.location ? { location: input.location } : {}),
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 /** Event description carrying the (minimized) booking context. */
 export function appointmentDescription(input: {
   attendee: Attendee;

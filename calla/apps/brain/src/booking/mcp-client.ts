@@ -279,6 +279,7 @@ function normalizeAppointment(
   const start = firstString(raw, ["start", "startTime", "begin", "from"]) ?? input.start;
   const end = firstString(raw, ["end", "endTime", "to"]) ?? input.end ?? start;
   const title = firstString(raw, ["title", "summary", "subject"]) ?? input.title ?? "Appointment";
+  const meetingUrl = firstString(raw, ["meetingUrl", "hangoutLink", "meetLink", "conferenceLink", "videoCallUrl"]);
   return {
     id,
     provider: "google",
@@ -292,6 +293,7 @@ function normalizeAppointment(
     title,
     status: "confirmed",
     createdAt: new Date().toISOString(),
+    ...(meetingUrl ? { meetingUrl } : {}),
   };
 }
 

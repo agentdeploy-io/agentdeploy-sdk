@@ -173,7 +173,7 @@ export function createBookingMcpServer(store: CallaStore): McpServer {
     {
       title: "Book an appointment",
       description:
-        "Create an appointment for a rep. For Calendly reps this returns a scheduling link to hand to the person (confirmed via Calendly's webhook). Attendee data is minimized (name required; email/phone optional).",
+        "Create an appointment for a rep. For Calendly reps this returns a scheduling link to hand to the person (confirmed via Calendly's webhook). Attendee data is minimized (name required; email/phone optional). For Google/Microsoft reps the event is created with a Google Meet video call: the result includes `meetingUrl` (the video-call join link) and `addToCalendarUrl` (one-click 'Add to Google Calendar'). In your confirmation message ALWAYS include both links verbatim (do not invent or reformat them) — e.g. 'Join video call: <meetingUrl>' and 'Add to Google Calendar: <addToCalendarUrl>'.",
       inputSchema: {
         repId: z.string().describe("Rep id from list_reps"),
         start: z.string().describe("ISO-8601 start time"),
@@ -212,6 +212,8 @@ export function createBookingMcpServer(store: CallaStore): McpServer {
           backend: backend.modeName,
           appointment: result.appointment,
           ...(result.link ? { link: result.link } : {}),
+          ...(result.meetingUrl ? { meetingUrl: result.meetingUrl } : {}),
+          ...(result.addToCalendarUrl ? { addToCalendarUrl: result.addToCalendarUrl } : {}),
           ...(result.calendlyHandoff
             ? { calendlyHandoff: true, note: "Share the link; the booking confirms via Calendly webhook." }
             : {}),

@@ -8,6 +8,7 @@
 import { randomUUID } from "node:crypto";
 import type { GoogleOAuthConfig } from "../oauth.js";
 import { parseProviderTime } from "../scheduling.js";
+import { BookingApiError } from "../types.js";
 import type {
   Appointment,
   Attendee,
@@ -60,6 +61,8 @@ export interface CreateEventInput {
 interface GoogleEvent {
   id?: string;
   htmlLink?: string;
+  /** Meet join URL — present when the event carries a Google Meet conference. */
+  hangoutLink?: string;
   summary?: string;
   status?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
@@ -96,6 +99,7 @@ function googleEventToAppointment(
     title: event.summary ?? "Survey",
     status: event.status === "cancelled" ? "cancelled" : "confirmed",
     createdAt: event.created ?? new Date().toISOString(),
+    ...(event.hangoutLink ? { meetingUrl: event.hangoutLink } : {}),
   };
 }
 
@@ -103,29 +107,51 @@ function googleEventToAppointment(
  * Create the survey event on the primary calendar.
  * start/end carry the rep's IANA timezone (Europe/Dublin default) so Google
  * renders local wall time regardless of the UTC wire value.
+ *
+ * A Google Meet conference is created inline (conferenceData + CHIME): Google
+ * provisions the hangout and stamps `hangoutLink` on the returned event. Some
+ * accounts (personal / some Workspace tiers) cannot provision Meet — in that
+ * case Google returns a 400/403 mentioning "conference", so we retry the same
+ * event WITHOUT conference data and simply omit the meeting link.
  */
 export async function googleCreateEvent(
   cfg: GoogleOAuthConfig,
   conn: ConnectionRecord,
   input: CreateEventInput,
-): Promise<{ appointment: Appointment; htmlLink?: string }> {
+): Promise<{ appointment: Appointment; htmlLink?: string; meetingUrl?: string }> {
   const description = appointmentDescription({
     attendee: input.attendee,
     ...(input.context ? { context: input.context } : {}),
     rep: input.rep,
   });
-  const body = {
+  const base = {
     summary: appointmentTitle(input.attendee.name),
     description,
     start: { dateTime: input.startIso, timeZone: input.timezone },
     end: { dateTime: input.endIso, timeZone: input.timezone },
     attendees: input.attendee.email ? [{ email: input.attendee.email }] : [],
   };
-  const event = await apiFetchJson<GoogleEvent>(
-    `${cfg.apiBase}/calendar/v3/calendars/primary/events?sendUpdates=all`,
-    "google create event",
-    { token: conn.accessToken, body },
-  );
+  const url = `${cfg.apiBase}/calendar/v3/calendars/primary/events?sendUpdates=all`;
+  let event: GoogleEvent;
+  try {
+    event = await apiFetchJson<GoogleEvent>(url, "google create event", {
+      token: conn.accessToken,
+      body: {
+        ...base,
+        conferenceDataVersion: 1,
+        conferenceData: { createRequest: { requestType: "CHIME" } },
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const conferenceRefused =
+      err instanceof BookingApiError &&
+      (err.status === 400 || err.status === 403) &&
+      /conference|meet|hangout/i.test(`${msg} ${err.detail ?? ""}`);
+    if (!conferenceRefused) throw err;
+    console.warn("[booking] Meet conference refused by provider — creating event without one:", msg);
+    event = await apiFetchJson<GoogleEvent>(url, "google create event", { token: conn.accessToken, body: base });
+  }
   const mapped = googleEventToAppointment(event, input.rep.id, input.timezone);
   // The submitted attendee/context are authoritative — providers may normalize
   // displayName to the email, so keep what the caller sent.
@@ -142,8 +168,13 @@ export async function googleCreateEvent(
         ...(input.context ? { context: input.context } : {}),
         status: "confirmed",
         createdAt: new Date().toISOString(),
+        ...(event.hangoutLink ? { meetingUrl: event.hangoutLink } : {}),
       };
-  return { appointment, ...(event.htmlLink ? { htmlLink: event.htmlLink } : {}) };
+  return {
+    appointment,
+    ...(event.htmlLink ? { htmlLink: event.htmlLink } : {}),
+    ...(event.hangoutLink ? { meetingUrl: event.hangoutLink } : {}),
+  };
 }
 
 /** Cancel (delete) an event; guests are notified via sendUpdates=all. */

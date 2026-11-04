@@ -44,6 +44,7 @@ import {
   msListUpcoming,
 } from "./providers/microsoft.js";
 import { calendlyCancelInvitee } from "./providers/calendly.js";
+import { googleCalendarTemplateUrl } from "./providers/shared.js";
 import type { CallaStore } from "../store/types.js";
 
 // ─── Result shapes ───────────────────────────────────────────────
@@ -65,6 +66,10 @@ export interface BookResult {
   appointment: Appointment;
   /** Calendly hand-off link (calendly reps) or provider event link. */
   link?: string;
+  /** Video-call join URL (Google Meet) created with the event, when available. */
+  meetingUrl?: string;
+  /** One-click "Add to Google Calendar" URL for the attendee (carries the meeting link). */
+  addToCalendarUrl?: string;
   /** True when the rep uses Calendly (no server-side event created). */
   calendlyHandoff?: boolean;
 }
@@ -295,7 +300,22 @@ export async function bookAppointment(
       : "webLink" in created && created.webLink
         ? created.webLink
         : undefined;
-  return { appointment, ...(link ? { link } : {}) };
+  const meetingUrl = "meetingUrl" in created && created.meetingUrl ? created.meetingUrl : appointment.meetingUrl;
+  const addToCalendarUrl = googleCalendarTemplateUrl({
+    title: appointment.title,
+    startIso: appointment.start,
+    endIso: appointment.end,
+    timezone,
+    ...(meetingUrl
+      ? { location: meetingUrl, details: `Join video call:\n${meetingUrl}` }
+      : {}),
+  });
+  return {
+    appointment: meetingUrl ? { ...appointment, meetingUrl } : appointment,
+    ...(link ? { link } : {}),
+    ...(meetingUrl ? { meetingUrl } : {}),
+    addToCalendarUrl,
+  };
 }
 
 /** Aggregate upcoming appointments across reps (best-effort per rep). */
