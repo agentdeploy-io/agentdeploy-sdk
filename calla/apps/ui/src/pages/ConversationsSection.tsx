@@ -25,6 +25,7 @@ import {
   Hand,
   Instagram,
   MessageCircle,
+  MessageSquareText,
   MessagesSquare,
   Music2,
   RefreshCw,
@@ -62,13 +63,15 @@ const PLATFORM_META: Record<
   instagram: { label: "Instagram", Icon: Instagram },
   whatsapp: { label: "WhatsApp", Icon: MessageCircle },
   tiktok: { label: "TikTok", Icon: Music2 },
+  reddit: { label: "Reddit", Icon: MessageSquareText },
 };
 
-const PLATFORM_FILTERS: Array<{ id: "all" | "instagram" | "whatsapp" | "tiktok"; label: string }> = [
+const PLATFORM_FILTERS: Array<{ id: "all" | "instagram" | "whatsapp" | "tiktok" | "reddit"; label: string }> = [
   { id: "all", label: "All" },
   { id: "instagram", label: "Instagram" },
   { id: "whatsapp", label: "WhatsApp" },
   { id: "tiktok", label: "TikTok" },
+  { id: "reddit", label: "Reddit" },
 ];
 
 const TIER_VARIANT: Record<string, "error" | "warning" | "muted"> = {
@@ -322,7 +325,7 @@ export interface ConversationsSectionProps {
 }
 
 export const ConversationsSection: React.FC<ConversationsSectionProps> = ({ onNavigate }) => {
-  const [platform, setPlatform] = React.useState<"all" | "instagram" | "whatsapp" | "tiktok">("all");
+  const [platform, setPlatform] = React.useState<"all" | "instagram" | "whatsapp" | "tiktok" | "reddit">("all");
   const [listResult, setListResult] =
     React.useState<ConversationsResult<{ conversations: ConversationSummary[]; total: number }> | null>(
       null,

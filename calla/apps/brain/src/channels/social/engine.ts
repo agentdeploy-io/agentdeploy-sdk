@@ -200,10 +200,15 @@ export function defaultTriggers(): TriggersConfig {
     ],
     tiktok: [],
     whatsapp: [],
+    // Reddit is PUBLIC: every thread reply is visible forever, so the safety
+    // default is approval-gated persona replies (flip to "auto" per-trigger
+    // or fallback once the voice is trusted).
+    reddit: [],
     fallback: {
       instagram: { action: "agent", mode: "auto" },
       tiktok: { action: "agent", mode: "approval" },
       whatsapp: { action: "agent", mode: "auto" },
+      reddit: { action: "agent", mode: "approval" },
     },
   };
 }
@@ -277,6 +282,7 @@ export function validateTriggersConfig(
   const ig = Array.isArray(b.instagram) ? b.instagram : defaults.instagram;
   const tt = Array.isArray(b.tiktok) ? b.tiktok : defaults.tiktok;
   const wa = Array.isArray(b.whatsapp) ? b.whatsapp : defaults.whatsapp;
+  const rd = Array.isArray(b.reddit) ? b.reddit : defaults.reddit;
 
   const instagram: SocialTrigger[] = [];
   for (const raw of ig) {
@@ -296,6 +302,12 @@ export function validateTriggersConfig(
     if (!t) return { ok: false, error: `invalid whatsapp trigger: ${truncate(JSON.stringify(raw) ?? "", 120)}` };
     whatsapp.push(t);
   }
+  const reddit: SocialTrigger[] = [];
+  for (const raw of rd) {
+    const t = sanitizeTrigger(raw);
+    if (!t) return { ok: false, error: `invalid reddit trigger: ${truncate(JSON.stringify(raw) ?? "", 120)}` };
+    reddit.push(t);
+  }
 
   const fb = b.fallback && typeof b.fallback === "object" ? b.fallback : {};
   return {
@@ -304,10 +316,12 @@ export function validateTriggersConfig(
       instagram,
       tiktok,
       whatsapp,
+      reddit,
       fallback: {
         instagram: sanitizeFallback(fb.instagram, defaults.fallback.instagram),
         tiktok: sanitizeFallback(fb.tiktok, defaults.fallback.tiktok),
         whatsapp: sanitizeFallback(fb.whatsapp, defaults.fallback.whatsapp),
+        reddit: sanitizeFallback(fb.reddit, defaults.fallback.reddit),
       },
     },
   };
@@ -366,7 +380,9 @@ export function matchTrigger(
       ? config.instagram
       : msg.platform === "tiktok"
         ? config.tiktok
-        : config.whatsapp;
+        : msg.platform === "reddit"
+          ? config.reddit
+          : config.whatsapp;
   for (const t of list) {
     if (scopeMatches(t.scope, msg.kind) && valueMatches(t, msg.text)) {
       return { trigger: t, specific: true };
@@ -377,7 +393,9 @@ export function matchTrigger(
       ? config.fallback.instagram
       : msg.platform === "tiktok"
         ? config.fallback.tiktok
-        : config.fallback.whatsapp;
+        : msg.platform === "reddit"
+          ? config.fallback.reddit
+          : config.fallback.whatsapp;
   return { trigger: fb, specific: false };
 }
 
@@ -395,7 +413,10 @@ function extractContacts(text: string): { emails: string[]; handles: string[] } 
 }
 
 function leadPrefix(platform: SocialPlatform): string {
-  return platform === "instagram" ? "IG" : platform === "tiktok" ? "TT" : "WA";
+  if (platform === "instagram") return "IG";
+  if (platform === "tiktok") return "TT";
+  if (platform === "reddit") return "RD";
+  return "WA";
 }
 
 /**
@@ -435,9 +456,9 @@ function deriveSourceUrl(msg: SocialInbound): string | undefined {
     return msg.externalUserId ? `https://wa.me/${msg.externalUserId}` : undefined;
   }
   if (!msg.username) return undefined;
-  return msg.platform === "instagram"
-    ? `https://instagram.com/${msg.username}`
-    : `https://tiktok.com/@${msg.username}`;
+  if (msg.platform === "instagram") return `https://instagram.com/${msg.username}`;
+  if (msg.platform === "reddit") return `https://reddit.com/user/${msg.username.replace(/^\/?u\//, "")}`;
+  return `https://tiktok.com/@${msg.username}`;
 }
 
 /** research blob for a FIRST contact (full sync). */

@@ -33,7 +33,7 @@ export type DecisionAction = "a" | "d";
 export type DecisionSource = "edge" | "mastra" | "social";
 
 /** Social platforms a decision can be delivered to (mirrors social/types.ts). */
-export type DecisionSocialPlatform = "instagram" | "tiktok" | "whatsapp";
+export type DecisionSocialPlatform = "instagram" | "tiktok" | "whatsapp" | "reddit";
 
 // ─── Outbound rendering ──────────────────────────────────────────
 

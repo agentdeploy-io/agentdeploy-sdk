@@ -57,6 +57,8 @@ export const CONVERSATION_PLATFORMS = [
   "instagram",
   "tiktok",
   "whatsapp",
+  /** Reddit thread conversations (inbound via poller, one thread per post). */
+  "reddit",
   /** Telephony (Telnyx) call transcripts — one thread per call id. */
   "voice",
 ] as const;

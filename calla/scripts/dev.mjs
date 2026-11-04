@@ -13,16 +13,23 @@
  *   npm run dev                # all three
  *   npm run dev -- --no-brain  # edge + ui only
  *   npm run dev -- --brain-only
- *   npm run dev -- --with-engine   # + real bi-edge engine on :8792; the UI's
- *                                  # /d/* data plane proxies to it instead of
- *                                  # the calla-edge dev stubs (see README
- *                                  # "Testing against the real engine")
- *
- * Env (all optional):
- *   ANTHROPIC_API_KEY  enables real LLM calls in the brain
- *   CALLA_EDGE_PORT / CALLA_BRAIN_PORT / CALLA_UI_PORT override ports
- *   CALLA_DATA_PORT    bi-edge engine port (default 8792, --with-engine)
- */
+  *   npm run dev -- --with-engine   # + real bi-edge engine on :8792; the UI's
+  *                                  # /d/* data plane proxies to it instead of
+  *                                  # the calla-edge dev stubs (see README
+  *                                  # "Testing against the real engine")
+  *   npm run dev -- --with-reddit-mcp  # + reddit-mcp-server sidecar on :3011
+  *                                    # (brain gets REDDIT_MCP_URL; export
+  *                                    # REDDIT_CLIENT_ID/SECRET/USERNAME/PASSWORD
+  *                                    # for the sidecar to be authenticated)
+  *
+  * Env (all optional):
+  *   ANTHROPIC_API_KEY  enables real LLM calls in the brain
+  *   CALLA_EDGE_PORT / CALLA_BRAIN_PORT / CALLA_UI_PORT override ports
+  *   CALLA_DATA_PORT    bi-edge engine port (default 8792, --with-engine)
+  *   REDDIT_MCP_PORT    reddit-mcp sidecar port (default 3011, --with-reddit-mcp)
+  *   REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USERNAME / REDDIT_PASSWORD
+  *                      passed through to the reddit-mcp sidecar
+  */
 
 import { spawn, execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -36,11 +43,13 @@ const args = process.argv.slice(2);
 const NO_BRAIN = args.includes("--no-brain");
 const BRAIN_ONLY = args.includes("--brain-only");
 const WITH_ENGINE = args.includes("--with-engine");
+const WITH_REDDIT_MCP = args.includes("--with-reddit-mcp");
 
 const EDGE_PORT = Number(process.env.CALLA_EDGE_PORT ?? 8787);
 const BRAIN_PORT = Number(process.env.CALLA_BRAIN_PORT ?? 3001);
 const UI_PORT = Number(process.env.CALLA_UI_PORT ?? 5174);
 const ENGINE_PORT = Number(process.env.CALLA_DATA_PORT ?? 8792);
+const REDDIT_MCP_PORT = Number(process.env.REDDIT_MCP_PORT ?? 3011);
 
 // Real lead-gen engine (packages/bi-edge), sibling of packages/calla.
 const ENGINE_DIR = resolve(ROOT, "..", "bi-edge");
@@ -87,6 +96,7 @@ const plannedPorts = [
   ...(NO_BRAIN ? [] : [{ name: "brain", port: BRAIN_PORT, env: "CALLA_BRAIN_PORT" }]),
   ...(BRAIN_ONLY ? [] : [{ name: "ui", port: UI_PORT, env: "CALLA_UI_PORT" }]),
   ...(WITH_ENGINE && !BRAIN_ONLY ? [{ name: "engine", port: ENGINE_PORT, env: "CALLA_DATA_PORT" }] : []),
+  ...(WITH_REDDIT_MCP && !BRAIN_ONLY ? [{ name: "reddit-mcp", port: REDDIT_MCP_PORT, env: "REDDIT_MCP_PORT" }] : []),
 ];
 for (const p of plannedPorts) {
   if (await portInUse(p.port)) {
@@ -188,13 +198,41 @@ if (WITH_ENGINE && !BRAIN_ONLY) {
   }
 }
 
+if (WITH_REDDIT_MCP && !BRAIN_ONLY) {
+  // reddit-mcp-server sidecar (jordanburke/reddit-mcp-server) in HTTP streamable
+  // mode — holds the Reddit OAuth + user credentials; the brain talks to it
+  // over MCP (see apps/brain/src/channels/social/reddit-mcp.ts).
+  const redditEnv = {
+    TRANSPORT_TYPE: "httpStream",
+    PORT: String(REDDIT_MCP_PORT),
+    HOST: "127.0.0.1",
+    OAUTH_ENABLED: "false", // loopback-only local dev; no bearer token
+  };
+  for (const k of ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_USERNAME", "REDDIT_PASSWORD"]) {
+    if (process.env[k]) redditEnv[k] = process.env[k];
+  }
+  services.push({
+    name: "reddit-mcp",
+    cwd: ROOT,
+    cmd: "npx",
+    args: ["-y", "reddit-mcp-server"],
+    env: redditEnv,
+    readyUrl: `http://127.0.0.1:${REDDIT_MCP_PORT}/health`,
+    required: false, // brain degrades to no-reddit-platform when it's down
+  });
+}
+
 if (!NO_BRAIN) {
   services.push({
     name: "brain",
     cwd: resolve(ROOT, "apps/brain"),
     cmd: "npx",
     args: ["tsx", "watch", "src/server.ts"],
-    env: { PORT: String(BRAIN_PORT), ...brainLlmEnv() },
+    env: {
+      PORT: String(BRAIN_PORT),
+      ...brainLlmEnv(),
+      ...(WITH_REDDIT_MCP ? { REDDIT_MCP_URL: `http://127.0.0.1:${REDDIT_MCP_PORT}/mcp` } : {}),
+    },
     readyUrl: `http://127.0.0.1:${BRAIN_PORT}/health`,
     required: false, // UI degrades gracefully when the brain is down
   });

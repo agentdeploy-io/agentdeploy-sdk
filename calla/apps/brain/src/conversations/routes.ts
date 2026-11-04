@@ -85,7 +85,11 @@ const takeoverSchema = z.object({
 
 function isPlatform(v: string | undefined): v is ConversationPlatform {
   return (
-    v === "instagram" || v === "tiktok" || v === "whatsapp" || v === "voice"
+    v === "instagram" ||
+    v === "tiktok" ||
+    v === "whatsapp" ||
+    v === "reddit" ||
+    v === "voice"
   );
 }
 
@@ -192,7 +196,7 @@ export function createConversationsApp(deps: ConversationsAppDeps): Hono {
       if (!isPlatform(platformParam)) {
         return c.json(
           {
-            error: `invalid platform: ${platformParam} (expected instagram | tiktok | whatsapp | voice)`,
+            error: `invalid platform: ${platformParam} (expected instagram | tiktok | whatsapp | reddit | voice)`,
           },
           400,
         );

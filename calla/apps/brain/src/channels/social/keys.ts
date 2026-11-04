@@ -35,6 +35,15 @@ export const SOCIAL_SEEN_PREFIX = "social:seen:";
 export const SOCIAL_SEEN_TTL_MS = 60 * 60 * 1000;
 
 /**
+ * Reddit poller dedupe: social:reddit:seen:<sha1(postId:author:body)>.
+ * The sidecar's formatted comment text carries no comment id, so the
+ * (post, author, body) hash is the stable identity of one thread reply.
+ */
+export const REDDIT_SEEN_PREFIX = "social:reddit:seen:";
+/** 30 days — long enough that a re-polled thread never re-triggers a reply. */
+export const REDDIT_SEEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
  * Capture-by-default per-lead state: social:lead:<leadKey> (NO TTL).
  * Value shape: { firstCapturedAt, lastSeenAt, messageCount, emailCaptured,
  * syncedStage:"raw", firstMessage, firstKind } — see SocialLeadState in engine.ts.

@@ -279,6 +279,43 @@ curl -X POST -H "Authorization: Bearer $JWT" localhost:3001/channels/bindings/co
   WhatsApp uses the Cloud API webhook with HMAC signature verification
 - Full guide: `apps/brain/src/channels/README.md`
 
+## Reddit outreach (reddit-mcp sidecar)
+
+Reddit posting/replying runs through the
+[jordanburke/reddit-mcp-server](https://github.com/jordanburke/reddit-mcp-server)
+sidecar (streamable-HTTP MCP). The sidecar holds the Reddit credentials and the
+anti-spam safety rails (safe-mode write pacing, duplicate + cross-subreddit
+detection, bot-disclosure footer); the brain talks to it over MCP
+(`apps/brain/src/channels/social/reddit-mcp.ts`, enabled by `REDDIT_MCP_URL`).
+
+**Local dev** (no Docker; npx runs the sidecar, credentials via shell env):
+
+```bash
+export REDDIT_CLIENT_ID=... REDDIT_CLIENT_SECRET=...     # Reddit OAuth app
+export REDDIT_USERNAME=... REDDIT_PASSWORD=...           # account that posts (writes only)
+npm run dev -- --with-reddit-mcp                          # sidecar on :3011, brain gets REDDIT_MCP_URL
+```
+
+**Docker** (any host; bearer-protected):
+
+```bash
+# .env next to docker-compose.reddit.yml: REDDIT_MCP_TOKEN, REDDIT_* credentials
+docker compose -f docker-compose.reddit.yml up -d
+# brain: REDDIT_MCP_URL=http://<host>:3011/mcp  REDDIT_MCP_TOKEN=<token>
+```
+
+**Smoke test** (read path is safe; the write probe publishes a deletable post):
+
+```bash
+npx tsx scripts/reddit-mcp-smoke.ts                  # health, tools, config, browse
+REDDIT_SMOKE_WRITE=1 npx tsx scripts/reddit-mcp-smoke.ts   # + create_post + reply
+```
+
+⚠️ Reddit is closing its public API: new self-serve OAuth stopped 2025-11,
+unregistered apps are removed **2027-01-12**, full shutdown March 2027.
+Register the app at developers.reddit.com/app-registration. Without
+`REDDIT_USERNAME`/`REDDIT_PASSWORD` the sidecar is read-only.
+
 ## Verification
 
 ```bash

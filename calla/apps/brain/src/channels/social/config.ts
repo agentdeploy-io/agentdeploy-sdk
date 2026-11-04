@@ -14,6 +14,7 @@
  */
 import type {
   InstagramConfig,
+  RedditConfig,
   SocialConfig,
   TikTokConfig,
   TikTokWebhookMode,
@@ -68,6 +69,8 @@ export function readSocialConfig(): SocialConfig {
 
   const igToken = clean(env.IG_ACCESS_TOKEN);
   const ttToken = clean(env.TIKTOK_ACCESS_TOKEN);
+  const redditMcpUrl = clean(env.REDDIT_MCP_URL);
+  const redditPollRaw = Number(clean(env.REDDIT_POLL_MINUTES) ?? 20);
 
   const edgeEventsUrl = stripTrailingSlash(
     clean(env.CHANNELS_EDGE_EVENTS_URL) ?? clean(env.CALLA_EDGE_URL) ?? DEFAULT_EDGE,
@@ -95,9 +98,16 @@ export function readSocialConfig(): SocialConfig {
     bcId: clean(env.TIKTOK_BC_ID),
   };
 
+  const reddit: RedditConfig = {
+    enabled: Boolean(redditMcpUrl),
+    // Reddit's own write pacing (sidecar safe mode) makes <5min polling unsafe.
+    pollMinutes: Number.isFinite(redditPollRaw) ? Math.max(5, redditPollRaw) : 20,
+  };
+
   return {
     instagram,
     tiktok,
+    reddit,
     whatsapp: {
       // Customer mode is ON by default; only an explicit "false" disables it
       // (unbound WhatsApp chats then keep the legacy operator-console path).

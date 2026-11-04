@@ -471,6 +471,46 @@ EXISTING Telegram/WhatsApp cards — and the web UI inbox — can decide.
    region table). Keep TikTok DMs on **approval** mode (the default) unless you
    have explicitly validated auto-reply for the region.
 
+### 13.3b Reddit (reddit-mcp sidecar)
+
+Reddit is **not** a direct-API adapter — it talks to the
+[jordanburke/reddit-mcp-server](https://github.com/jordanburke/reddit-mcp-server)
+sidecar over streamable-HTTP MCP (`social/reddit-mcp.ts`, enabled by
+`REDDIT_MCP_URL`). The sidecar holds the Reddit OAuth + user credentials and the
+Responsible-Builder safety rails (safe-mode write pacing, duplicate +
+cross-subreddit detection, bot-disclosure footer). The brain never sees the
+credentials.
+
+- **Enablement:** the platform is enabled iff `REDDIT_MCP_URL` is set on the
+  brain (optional `REDDIT_MCP_TOKEN` bearer when the sidecar runs with
+  `OAUTH_ENABLED=true`). Local dev: `npm run dev -- --with-reddit-mcp`
+  (npx sidecar on :3011, credentials passed through from the shell). Docker:
+  `docker compose -f docker-compose.reddit.yml up -d` (repo root).
+- **Inbound — poller, no webhook.** Reddit has no webhook, so
+  `startRedditPolling` (every `REDDIT_POLL_MINUTES`, default 20, min 5) runs
+  `get_my_overview` → `get_post_comments` on up to 5 recent own posts, and every
+  NEW non-OP comment becomes `SocialInbound {platform:"reddit", kind:"comment",
+  externalUserId:"t3_<postId>", username:"<u/name>", commentId:"t3_<postId>"}`
+  → `handleSocialInbound` (same trigger/lead/HITL pipeline as every platform).
+  Dedupe is a 30-day sha1(post:author:body) seen-key (`social:reddit:seen:*`),
+  since the sidecar's formatted output carries no comment ids.
+- **Outbound:** `sendText`/`sendPrivateReply` both map to `reply_to_post`
+  (parent thing id `t3_<postId>` / `t1_<commentId>`), through the shared
+  per-platform send queue. v1 limitation: replies land at post level even when
+  the trigger was a nested comment.
+- **Safety defaults:** reddit fallback is `agent + approval` (public content —
+  a human confirms every reply until trusted); no reply-window concept
+  (`withinWindow` is a no-op).
+- **Credentials reality:** Reddit blocks unauthenticated API calls (403) and is
+  closing its public API — new self-serve OAuth stopped 2025-11, unregistered
+  apps are removed **2027-01-12**, full shutdown March 2027. The sidecar runs
+  **keyless** (Arctic Shift archive reads) without OAuth, but writes and
+  `get_my_overview` REQUIRE `REDDIT_CLIENT_ID/SECRET` +
+  `REDDIT_USERNAME/PASSWORD` on the SIDECAR; without them the poller degrades to
+  a rate-limited warning and every reply degrades to the approval path.
+  Smoke test: `npx tsx scripts/reddit-mcp-smoke.ts` (write probe opt-in via
+  `REDDIT_SMOKE_WRITE=1`).
+
 ### 13.4 Trigger / automation model
 
 Triggers are persisted in the store cache at key **`social:triggers`**
@@ -483,9 +523,13 @@ Triggers are persisted in the store cache at key **`social:triggers`**
       "value": "ai", "action": "agent", "mode": "approval" }
   ],
   "tiktok": [],
+  "whatsapp": [],
+  "reddit":   [],
   "fallback": {
     "instagram": { "action": "agent", "mode": "auto" },
-    "tiktok":    { "action": "agent", "mode": "approval" }
+    "tiktok":    { "action": "agent", "mode": "approval" },
+    "whatsapp":  { "action": "agent", "mode": "auto" },
+    "reddit":    { "action": "agent", "mode": "approval" }
   }
 }
 ```

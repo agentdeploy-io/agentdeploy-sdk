@@ -48,7 +48,16 @@ import type { DecisionRegistry } from "../types.js";
  * IG). Outside the window auto-send is blocked → the approval-card path
  * handles it. TEMPLATE messages (window re-openers) are OUT OF SCOPE.
  */
-export type SocialPlatform = "instagram" | "tiktok" | "whatsapp";
+/**
+ * "reddit" (WAVE-3): proactive outreach + thread conversations via the
+ * reddit-mcp-server sidecar (see reddit.ts / reddit-mcp.ts). No webhook —
+ * inbound is a POLLER (pollRedditInbound) that normalizes new thread replies
+ * into SocialInbound {platform:"reddit", kind:"comment"} and funnels them
+ * through handleSocialInbound like any other platform. For reddit,
+ * externalUserId is the PARENT thing id (t3_<postId>) the reply goes under,
+ * and username is the commenter's u/name.
+ */
+export type SocialPlatform = "instagram" | "tiktok" | "whatsapp" | "reddit";
 
 /** What surfaced the inbound event. */
 export type SocialKind = "dm" | "comment" | "postback" | "story_mention";
@@ -139,10 +148,13 @@ export interface TriggersConfig {
   tiktok: SocialTrigger[];
   /** WhatsApp customer conversations (unbound chats on the business line). */
   whatsapp: SocialTrigger[];
+  /** Reddit thread replies (inbound via poller; outbound via reddit-mcp sidecar). */
+  reddit: SocialTrigger[];
   fallback: {
     instagram: SocialFallback;
     tiktok: SocialFallback;
     whatsapp: SocialFallback;
+    reddit: SocialFallback;
   };
 }
 
@@ -213,10 +225,24 @@ export interface WhatsAppSocialConfig {
   customerMode: boolean;
 }
 
+/**
+ * Reddit platform config. The MCP sidecar address/token live in process env
+ * (REDDIT_MCP_URL / REDDIT_MCP_TOKEN — read by reddit-mcp.ts); this only
+ * carries the poller cadence. Reddit has no reply window (public comments),
+ * so the engine's window gate is a no-op for this platform.
+ */
+export interface RedditConfig {
+  /** True when REDDIT_MCP_URL is present. */
+  enabled: boolean;
+  /** Reply-poller cadence in minutes (REDDIT_POLL_MINUTES, default 20, min 5). */
+  pollMinutes: number;
+}
+
 export interface SocialConfig {
   instagram: InstagramConfig;
   tiktok: TikTokConfig;
   whatsapp: WhatsAppSocialConfig;
+  reddit: RedditConfig;
   /** Default persona agent id (SOCIAL_REPLY_AGENT, default "miles"). */
   replyAgent: string;
   /** bi-edge /inbound/sync URL for lead capture (SOCIAL_ENGINE_SYNC_URL). */

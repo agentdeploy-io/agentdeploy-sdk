@@ -1,0 +1,45 @@
+# Reddit MCP sidecar for the Calla brain (jordanburke/reddit-mcp-server, HTTP mode).
+#
+#   docker compose -f docker-compose.reddit.yml up -d
+#
+# The brain connects with:
+#   REDDIT_MCP_URL=http://<this host>:${REDDIT_MCP_PORT:-3011}/mcp
+#   REDDIT_MCP_TOKEN=<same value as OAUTH_TOKEN below, when OAUTH_ENABLED=true>
+#
+# Reddit OAuth app: register at developers.reddit.com/app-registration
+# (existing self-serve apps keep working, but unregistered apps are removed
+# from 2027-01-12 and the public API closes March 2027 — verify the app is
+# registered). Write tools (create_post / reply_to_post) additionally need
+# REDDIT_USERNAME + REDDIT_PASSWORD; without them the sidecar is read-only.
+services:
+  reddit-mcp:
+    image: ghcr.io/jordanburke/reddit-mcp-server:latest
+    ports:
+      - "${REDDIT_MCP_PORT:-3011}:3000"
+    environment:
+      - REDDIT_CLIENT_ID=${REDDIT_CLIENT_ID:-}
+      - REDDIT_CLIENT_SECRET=${REDDIT_CLIENT_SECRET:-}
+      - REDDIT_USERNAME=${REDDIT_USERNAME:-}
+      - REDDIT_PASSWORD=${REDDIT_PASSWORD:-}
+      # Reddit Responsible Builder Policy safeguards (write pacing + dedupe)
+      - REDDIT_SAFE_MODE=${REDDIT_SAFE_MODE:-standard}
+      # Appends a bot-disclosure footer to every post/reply
+      - REDDIT_BOT_DISCLOSURE=${REDDIT_BOT_DISCLOSURE:-auto}
+      # Bearer-token auth on /mcp (set false for loopback-only local dev)
+      - OAUTH_ENABLED=${OAUTH_ENABLED:-true}
+      # Must equal REDDIT_MCP_TOKEN on the brain. If left empty the server
+      # generates a token and prints it at startup — copy it into .env and
+      # `docker compose -f docker-compose.reddit.yml up -d` again.
+      - OAUTH_TOKEN=${REDDIT_MCP_TOKEN:-}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3

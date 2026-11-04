@@ -41,6 +41,7 @@ import { readSocialConfig, TIKTOK_REGION_WARNING } from "./social/config.js";
 import { InstagramAdapter } from "./social/instagram.js";
 import { TikTokAdapter } from "./social/tiktok.js";
 import { WhatsAppSocialAdapter } from "./social/whatsapp.js";
+import { RedditAdapter, startRedditPolling } from "./social/reddit.js";
 import { enqueueSocialSend } from "./social/queue.js";
 import { registerSocialSender } from "./social/senders.js";
 import {
@@ -75,7 +76,8 @@ export interface PlatformStatus {
 
 export interface SocialPlatformStatus {
   enabled: boolean;
-  mode: "webhook" | "off";
+  /** "polling" = Reddit (poller-driven, no webhook). */
+  mode: "webhook" | "polling" | "off";
   /** Only set for TikTok — the region-gate notice operators must not miss. */
   regionWarning?: string;
 }
@@ -87,6 +89,7 @@ export interface ChannelsStatus {
     whatsapp: PlatformStatus;
     instagram: SocialPlatformStatus;
     tiktok: SocialPlatformStatus;
+    reddit: SocialPlatformStatus;
   };
   bindings: number;
   social: { replyAgent: string; triggers: number; leadSync: boolean };
@@ -97,6 +100,10 @@ interface SocialRuntime {
   deps: SocialDeps;
   instagram?: InstagramAdapter;
   tiktok?: TikTokAdapter;
+  /** Reddit thread adapter (poller-driven; sidecar-backed). */
+  reddit?: RedditAdapter;
+  /** Stop the reddit inbound poller (set in startChannels). */
+  stopRedditPolling?: () => void;
   /** Customer-conversation transport for the business WhatsApp line. */
   whatsapp?: WhatsAppSocialAdapter;
 }
@@ -138,6 +145,7 @@ async function computeStatus(rt: ChannelsRuntime | null): Promise<ChannelsStatus
         whatsapp: { enabled: false, mode: "off" },
         instagram: { enabled: false, mode: "off" },
         tiktok: { enabled: false, mode: "off" },
+        reddit: { enabled: false, mode: "off" },
       },
       bindings: 0,
       social: { replyAgent: "miles", triggers: 0, leadSync: false },
@@ -148,13 +156,17 @@ async function computeStatus(rt: ChannelsRuntime | null): Promise<ChannelsStatus
   const sc = rt.social.config;
   const triggers = await loadTriggers(rt.social.deps).catch(() => defaultTriggers());
   const triggerCount =
-    triggers.instagram.length + triggers.tiktok.length + triggers.whatsapp.length;
+    triggers.instagram.length +
+    triggers.tiktok.length +
+    triggers.whatsapp.length +
+    triggers.reddit.length;
   return {
     enabled:
       rt.config.telegram.enabled ||
       rt.config.whatsapp.enabled ||
       sc.instagram.enabled ||
-      sc.tiktok.enabled,
+      sc.tiktok.enabled ||
+      sc.reddit.enabled,
     platforms: {
       telegram: {
         enabled: rt.config.telegram.enabled,
@@ -174,6 +186,11 @@ async function computeStatus(rt: ChannelsRuntime | null): Promise<ChannelsStatus
         enabled: sc.tiktok.enabled,
         mode: sc.tiktok.enabled ? "webhook" : "off",
         ...(sc.tiktok.enabled ? { regionWarning: TIKTOK_REGION_WARNING } : {}),
+      },
+      reddit: {
+        enabled: sc.reddit.enabled,
+        // Poller-driven (no webhook); cadence in pollMinutes from config.
+        mode: sc.reddit.enabled ? "polling" : "off",
       },
     },
     bindings: bindings.length,
@@ -202,6 +219,12 @@ export function createChannelsApp(deps: ChannelDeps): Hono {
   const socialTiktok = socialConfig.tiktok.enabled
     ? new TikTokAdapter(socialConfig.tiktok)
     : undefined;
+  // Reddit: enabled when the sidecar URL is set (REDDIT_MCP_URL). Reads work
+  // keyless; replies need user creds ON THE SIDECAR, else the engine's
+  // auto-send fails over to the approval path (degrade-to-human).
+  const socialReddit = socialConfig.reddit.enabled
+    ? new RedditAdapter(socialConfig.reddit)
+    : undefined;
   // WhatsApp customer transport: reuse the Cloud API send config from the
   // channels config; enabled only when the platform can send AND customer
   // mode is on (otherwise the engine degrades sends to approval cards).
@@ -218,6 +241,7 @@ export function createChannelsApp(deps: ChannelDeps): Hono {
   const socialAdapters: Partial<Record<SocialPlatform, SocialAdapter>> = {};
   if (socialInstagram) socialAdapters.instagram = socialInstagram;
   if (socialTiktok) socialAdapters.tiktok = socialTiktok;
+  if (socialReddit) socialAdapters.reddit = socialReddit;
   if (socialWhatsapp.enabled) socialAdapters.whatsapp = socialWhatsapp;
 
   const socialDeps: SocialDeps = {
@@ -245,6 +269,16 @@ export function createChannelsApp(deps: ChannelDeps): Hono {
     const tt = socialTiktok;
     registerSocialSender("tiktok", {
       send: (target, text) => enqueueSocialSend("tiktok", () => tt.sendText(target, text)),
+    });
+  }
+  if (socialReddit) {
+    const rd = socialReddit;
+    registerSocialSender("reddit", {
+      // commentId carries the parent thing id (t3_/t1_); fall back to target.
+      send: (target, text, commentId) =>
+        enqueueSocialSend("reddit", () =>
+          commentId ? rd.sendPrivateReply(commentId, text) : rd.sendText(target, text),
+        ),
     });
   }
   if (socialWhatsapp.enabled) {
@@ -275,6 +309,7 @@ export function createChannelsApp(deps: ChannelDeps): Hono {
     deps: socialDeps,
     instagram: socialInstagram,
     tiktok: socialTiktok,
+    reddit: socialReddit,
     whatsapp: socialWhatsapp.enabled ? socialWhatsapp : undefined,
   };
 
@@ -561,12 +596,13 @@ export function createChannelsApp(deps: ChannelDeps): Hono {
       .appendAudit({
         agentId: "social",
         kind: "social.triggers.updated",
-        entry: {
-          instagram: res.config.instagram.length,
-          tiktok: res.config.tiktok.length,
-          whatsapp: res.config.whatsapp.length,
-          fallback: res.config.fallback,
-        },
+          entry: {
+            instagram: res.config.instagram.length,
+            tiktok: res.config.tiktok.length,
+            whatsapp: res.config.whatsapp.length,
+            reddit: res.config.reddit.length,
+            fallback: res.config.fallback,
+          },
       })
       .catch((err) =>
         console.warn("[channels:social] triggers audit failed:", errorMessage(err)),
@@ -578,11 +614,17 @@ export function createChannelsApp(deps: ChannelDeps): Hono {
   app.post("/social/test", async (c) => {
     const body = (await c.req.json().catch(() => null)) as Partial<SocialInbound> | null;
     const platform: SocialPlatform | undefined =
-      body?.platform === "instagram" || body?.platform === "tiktok" || body?.platform === "whatsapp"
+      body?.platform === "instagram" ||
+      body?.platform === "tiktok" ||
+      body?.platform === "whatsapp" ||
+      body?.platform === "reddit"
         ? body.platform
         : undefined;
     if (!platform) {
-      return c.json({ error: "platform must be 'instagram' | 'tiktok' | 'whatsapp'" }, 400);
+      return c.json(
+        { error: "platform must be 'instagram' | 'tiktok' | 'whatsapp' | 'reddit'" },
+        400,
+      );
     }
     const kind: SocialInbound["kind"] =
       body?.kind === "comment" ||
@@ -654,6 +696,16 @@ export function startChannels(): void {
     }
   }
 
+  // Reddit inbound poller (reddit has no webhook). No-ops when the platform
+  // is disabled (no REDDIT_MCP_URL) and degrades to a warning if the sidecar
+  // is unreachable or lacks user creds.
+  if (runtime.social.reddit?.enabled) {
+    runtime.social.stopRedditPolling = startRedditPolling(
+      runtime.social.deps,
+      runtime.social.config.reddit.pollMinutes,
+    );
+  }
+
   console.log(
     `[channels] started (telegram: ${telegramMode(runtime)}, whatsapp: ${
       config.whatsapp.enabled
@@ -663,7 +715,7 @@ export function startChannels(): void {
         : "off"
     }, instagram: ${runtime.social.config.instagram.enabled ? "webhook" : "off"}, tiktok: ${
       runtime.social.config.tiktok.enabled ? "webhook" : "off"
-    })`,
+    }, reddit: ${runtime.social.config.reddit.enabled ? `poll/${runtime.social.config.reddit.pollMinutes}m` : "off"})`,
   );
 }
 
@@ -671,6 +723,12 @@ export function startChannels(): void {
 export function stopChannels(): void {
   if (!runtime) return;
   runtime.telegram?.stopPolling();
+  try {
+    runtime.social.stopRedditPolling?.();
+    runtime.social.stopRedditPolling = undefined;
+  } catch (err) {
+    console.warn("[channels] reddit poller stop failed:", errorMessage(err));
+  }
   try {
     runtime.notifier.stop();
   } catch (err) {
