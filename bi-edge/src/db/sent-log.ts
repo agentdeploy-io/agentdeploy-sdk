@@ -8,8 +8,9 @@ const INSERT_ENTRY = `
 
 const SELECT_BY_LEAD = `SELECT * FROM sent_log WHERE lead_key = ? ORDER BY id DESC`;
 const SELECT_RECENT = `SELECT * FROM sent_log ORDER BY id DESC LIMIT ?`;
-const COUNT_TODAY = `SELECT COUNT(*) as cnt FROM sent_log WHERE at >= ?`;
-const COUNT_TODAY_CHANNEL = `SELECT COUNT(*) as cnt FROM sent_log WHERE at >= ? AND channel = ?`;
+// Test sends (lead_key "test:…") never consume real-send quota.
+const COUNT_TODAY = `SELECT COUNT(*) as cnt FROM sent_log WHERE at >= ? AND lead_key NOT LIKE 'test:%'`;
+const COUNT_TODAY_CHANNEL = `SELECT COUNT(*) as cnt FROM sent_log WHERE at >= ? AND channel = ? AND lead_key NOT LIKE 'test:%'`;
 const HAS_REAL_SENT_BY_LEAD = `SELECT COUNT(*) as cnt FROM sent_log WHERE lead_key = ? AND status = 'sent'`;
 const HAS_REAL_SENT_BY_EMAIL = `SELECT COUNT(*) as cnt FROM sent_log WHERE email = ? AND status = 'sent'`;
 

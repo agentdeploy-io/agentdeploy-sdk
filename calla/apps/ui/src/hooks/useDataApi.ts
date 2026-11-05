@@ -267,6 +267,80 @@ export function useUpdateLead(deploymentId?: string) {
   return { update, loading, error };
 }
 
+// ─── useSendLead / useTestSend ───────────────────────────────────
+
+export interface SendResult {
+  proceed: boolean;
+  reason?: string;
+  statusStr: string;
+  email?: string;
+  error?: string;
+}
+
+/**
+ * POST /cmd/send {key} — run one lead's pitch through the engine's full gate
+ * stack (approval, pitch, MX, blacklist, cap, double-send guard). Resolves
+ * with the gate result so the UI can show exactly why a send was blocked.
+ */
+export function useSendLead(deploymentId?: string) {
+  const [loading, setLoading] = useState(false);
+
+  const send = useCallback(async (key: string): Promise<SendResult | null> => {
+    if (!deploymentId) return null;
+    setLoading(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const json = (await res.json().catch(() => null)) as (SendResult & { key?: string }) | null;
+      if (!res.ok || !json) throw new Error(json?.error ?? `${res.status}`);
+      return json;
+    } catch (err) {
+      handleNetworkError("Send lead", err);
+      return { proceed: false, statusStr: "failed", reason: err instanceof Error ? err.message : "Send failed" };
+    } finally {
+      setLoading(false);
+    }
+  }, [deploymentId]);
+
+  return { send, loading };
+}
+
+/**
+ * POST /cmd/test-send {leadKey?} — "email my own inbox". Without a leadKey
+ * the engine runs a synthetic (never persisted) test lead that requires
+ * testMode + testRecipient, so it always lands in the operator's inbox.
+ */
+export function useTestSend(deploymentId?: string) {
+  const [loading, setLoading] = useState(false);
+
+  const send = useCallback(async (leadKey?: string): Promise<SendResult | null> => {
+    if (!deploymentId) return null;
+    setLoading(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/test-send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(leadKey ? { leadKey } : {}),
+        signal: AbortSignal.timeout(30000),
+      });
+      const json = (await res.json().catch(() => null)) as (SendResult & { key?: string; synthetic?: boolean }) | null;
+      if (!res.ok || !json) throw new Error(json?.error ?? `${res.status}`);
+      return json;
+    } catch (err) {
+      handleNetworkError("Test send", err);
+      return { proceed: false, statusStr: "failed", reason: err instanceof Error ? err.message : "Test send failed" };
+    } finally {
+      setLoading(false);
+    }
+  }, [deploymentId]);
+
+  return { send, loading };
+}
+
 // ─── useBulkAction ───────────────────────────────────────────────
 
 export function useBulkAction(deploymentId?: string) {

@@ -18,6 +18,8 @@ export { CfSqlDatabase } from "./db/cf-sqlite.js";
 
 import { createHandler } from "@agentdeploy-io/edge-sdk";
 import { Supervisor, COMMANDS, parseCommand, handleCommand } from "./agents/supervisor.js";
+import { runOutreach } from "./agents/outreach.js";
+import type { Lead } from "./db/types.js";
 import { handleInboundSync } from "./routes/inbound-sync.js";
 import { handleRunComplete } from "./routes/inbound-run-complete.js";
 import { handleDataApi } from "./routes/data-api.js";
@@ -345,6 +347,14 @@ export class BiEdgeAgent {
     if (url.pathname.startsWith("/_cron/")) {
       const cronName = url.pathname.replace("/_cron/", "");
       return withCors(await this.dispatchCron(cronName, db, env));
+    }
+
+    if (url.pathname === "/cmd/send" && request.method === "POST") {
+      return withCors(await this.handleSendCommand(request, db, env));
+    }
+
+    if (url.pathname === "/cmd/test-send" && request.method === "POST") {
+      return withCors(await this.handleTestSend(request, db, env));
     }
 
     if (url.pathname.startsWith("/cmd/") && request.method === "POST") {
@@ -1012,6 +1022,78 @@ export class BiEdgeAgent {
       return json({ ok: true, cron: name, result });
     } catch (e: any) {
       return json({ error: e.message, cron: name }, 500);
+    }
+  }
+
+  /** POST /cmd/send {key} — send one lead's pitch through the full gate stack. */
+  private async handleSendCommand(request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+    let body: { key?: string };
+    try {
+      body = (await request.json()) as { key?: string };
+    } catch {
+      return json({ error: "Invalid JSON" }, 400);
+    }
+    const key = body.key;
+    if (!key) return json({ error: "key required" }, 400);
+    const lead = getLead(db as any, key);
+    if (!lead) return json({ error: `Lead not found: ${key}` }, 404);
+    try {
+      const result = await runOutreach(db as any, lead, env);
+      return json({ key, ...result });
+    } catch (e: any) {
+      return json({ error: e.message, key }, 500);
+    }
+  }
+
+  /**
+   * POST /cmd/test-send {leadKey?} — "email my own inbox" test.
+   * With leadKey: that lead's pitch runs through the full gate stack.
+   * Without: a synthetic (never persisted) test lead runs — requires
+   * testMode + testRecipient so it always lands in the operator's inbox.
+   */
+  private async handleTestSend(request: Request, db: CfSqlDatabase, env: Record<string, unknown>): Promise<Response> {
+    let body: { leadKey?: string } = {};
+    try {
+      body = ((await request.json()) ?? {}) as { leadKey?: string };
+    } catch {
+      /* no body — synthetic path */
+    }
+    let lead: Lead;
+    let synthetic = false;
+    if (body.leadKey) {
+      const found = getLead(db as any, body.leadKey);
+      if (!found) return json({ error: `Lead not found: ${body.leadKey}` }, 404);
+      lead = found;
+    } else {
+      const recipient = getTestRecipient(db as any);
+      if (!isTestMode(db as any) || recipient === "") {
+        return json({ error: "Enable test mode and set a test recipient first (Campaign & Test)" }, 400);
+      }
+      const now = new Date().toISOString();
+      synthetic = true;
+      lead = {
+        key: `test:${Date.now()}`,
+        country: "test",
+        name: "Local Test Send",
+        website: null,
+        emails: JSON.stringify([{ addr: recipient, kind: "test", source: "test-send", confidence: 1, mx_ok: true }]),
+        stage: "approved",
+        status: "approved",
+        pitch_subject: "AgentDeploy pipeline test",
+        pitch_body: "This is a pipeline test send — the outreach engine delivered this email to your test inbox. If you can read it, sending works end to end.",
+        created_at: now,
+        updated_at: now,
+      };
+    }
+    try {
+      // Synthetic test send: a dry-run verifies the pipeline and can never
+      // leave the building, so it may proceed with sendEnabled off. A real
+      // (dryRun off) synthetic send still requires sendEnabled. An explicit
+      // leadKey is a normal send — full gate stack, no relaxation.
+      const result = await runOutreach(db as any, lead, env, synthetic ? { allowDryRunWithoutSendEnabled: true } : undefined);
+      return json({ key: lead.key, synthetic, ...result });
+    } catch (e: any) {
+      return json({ error: e.message, key: lead.key }, 500);
     }
   }
 

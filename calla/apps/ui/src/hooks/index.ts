@@ -74,6 +74,8 @@ export {
   useLeads,
   useLeadDetail,
   useUpdateLead,
+  useSendLead,
+  useTestSend,
   useBulkAction,
   useDeleteRows,
   useExportCsv,
@@ -98,6 +100,7 @@ export type {
   WireTopology,
   SettingsData,
   SecretEntry,
+  SendResult,
 } from "./useDataApi";
 
 // ─── Core (Fly.io VM) plane ──────────────────────────────────────

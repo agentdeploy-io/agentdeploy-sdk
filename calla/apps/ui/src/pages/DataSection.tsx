@@ -14,7 +14,7 @@
  */
 
 import * as React from "react";
-import { Check, Database, Download, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { Check, Database, Download, RefreshCw, Send, Trash2, Upload, X } from "lucide-react";
 import {
   DataGrid,
   DetailPanel,
@@ -35,6 +35,7 @@ import {
   useExportCsv,
   useImportCsv,
   useLeads,
+  useSendLead,
   useUpdateLead,
   type DataFilters,
   type ImportDryRun,
@@ -269,6 +270,9 @@ export const DataSection: React.FC<DataSectionProps> = () => {
   const { execute: executeBulk, loading: bulkLoading, error: bulkError } = useBulkAction(deploymentId);
   const { update: updateRow, loading: singleLoading } = useUpdateLead(deploymentId);
   const { execute: deleteRows, loading: deleteLoading } = useDeleteRows(deploymentId);
+  const { send: sendLead, loading: sendLoading } = useSendLead(deploymentId);
+  /** Keep manual send batches small — sends are real (or quota-logged). */
+  const BULK_SEND_CAP = 20;
   const [deleteConfirmKeys, setDeleteConfirmKeys] = React.useState<string[] | null>(null);
   const { download: downloadCsv, loading: exportLoading } = useExportCsv(deploymentId);
   const { dryRunImport, confirmImport, reset: resetImport, loading: importLoading } =
@@ -443,6 +447,51 @@ export const DataSection: React.FC<DataSectionProps> = () => {
     },
     [activeKey, updateRow, refetch],
   );
+
+  const handleSend = React.useCallback(
+    async (keys: string[]) => {
+      if (keys.length === 0) return;
+      const results: Array<{ key: string; ok: boolean; label: string }> = [];
+      for (const key of keys) {
+        const r = await sendLead(key);
+        if (r && r.proceed) {
+          results.push({ key, ok: true, label: r.statusStr === "dry-run" ? "dry-run" : "sent" });
+        } else {
+          results.push({ key, ok: false, label: r?.reason || r?.error || "blocked" });
+        }
+      }
+      const okCount = results.filter((r) => r.ok).length;
+      if (keys.length === 1) {
+        const r = results[0];
+        if (r.ok) {
+          toast.success(
+            "Send processed",
+            r.label === "dry-run" ? "Logged as dry-run — nothing left the building." : "Email sent via Brevo."
+          );
+        } else {
+          toast.error("Send blocked", r.label);
+        }
+      } else if (okCount === keys.length) {
+        toast.success(`Sent ${okCount} leads`, okCount > 1 ? "Each went through the full gate stack." : undefined);
+      } else {
+        const blocked = results.filter((r) => !r.ok);
+        toast.error(
+          `${okCount} sent, ${blocked.length} blocked`,
+          blocked.map((b) => `${b.key}: ${b.label}`).join(" · ").slice(0, 400)
+        );
+      }
+      refetch();
+    },
+    [sendLead, refetch]
+  );
+
+  const handleBulkSend = React.useCallback(() => {
+    if (selectedKeys.size > BULK_SEND_CAP) {
+      toast.error("Too many selected", `Send at most ${BULK_SEND_CAP} leads at a time.`);
+      return;
+    }
+    void handleSend(Array.from(selectedKeys));
+  }, [selectedKeys, handleSend, BULK_SEND_CAP]);
 
   const runDelete = React.useCallback(
     async (keys: string[]) => {
@@ -768,6 +817,15 @@ export const DataSection: React.FC<DataSectionProps> = () => {
                   {bulkLoading ? "Working…" : "Approve for outreach"}
                 </Button>
                 <Button
+                  size="sm"
+                  onClick={handleBulkSend}
+                  disabled={sendLoading}
+                  title={`Send these leads' pitches now (max ${BULK_SEND_CAP} at a time). Only approved leads with a pitch will actually go out.`}
+                >
+                  <Send className="size-3.5" />
+                  {sendLoading ? "Sending…" : "Send selected"}
+                </Button>
+                <Button
                   variant="outline"
                   size="sm"
                   className="text-destructive hover:bg-destructive/10 hover:text-destructive"
@@ -880,6 +938,15 @@ export const DataSection: React.FC<DataSectionProps> = () => {
         actions={
           activeRow ? (
             <>
+              <Button
+                size="sm"
+                onClick={() => activeKey && void handleSend([activeKey])}
+                disabled={sendLoading}
+                title="Send this lead's pitch now through the full gate stack (approval, MX, blacklist, caps, double-send guard)"
+              >
+                <Send className="size-3.5" />
+                {sendLoading ? "Sending…" : "Send pitch"}
+              </Button>
               <Button
                 variant="success"
                 size="sm"

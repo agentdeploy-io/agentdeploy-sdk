@@ -343,6 +343,58 @@ describe("outreach-gates integration", () => {
     expect(todayCount).toBe(5);
   });
 
+  it("gate: test sends (test: lead keys) do not consume the daily cap", () => {
+    setSetting(db, "dailyCap", "2");
+    logSentEmail(db, { lead_key: "test:1", email: "me@test.com", subject: "t", message_id: null, status: "dry-run", at: new Date().toISOString() });
+    logSentEmail(db, { lead_key: "test:2", email: "me@test.com", subject: "t", message_id: null, status: "sent", at: new Date().toISOString() });
+    logSentEmail(db, { lead_key: "uk/real-1", email: "real@test.com", subject: "t", message_id: "m1", status: "sent", at: new Date().toISOString() });
+    // Only the one real lead counts against the cap.
+    expect(countSentToday(db)).toBe(1);
+  });
+
+  it("test-send: synthetic lead in test mode dry-runs to the test recipient", async () => {
+    setSetting(db, "dryRun", "true");
+    setSetting(db, "testMode", "true");
+    setSetting(db, "testRecipient", "me@operator.dev");
+    const now = new Date().toISOString();
+    const testLead: Lead = {
+      key: "test:999",
+      country: "test",
+      name: "Local Test Send",
+      website: null,
+      emails: JSON.stringify([{ addr: "me@operator.dev", kind: "test", source: "test-send", confidence: 1, mx_ok: true }]),
+      stage: "approved",
+      status: "approved",
+      pitch_subject: "Pipeline test",
+      pitch_body: "Test body.",
+      created_at: now,
+      updated_at: now,
+    };
+    const result = await runOutreach(db, testLead, env);
+    expect(result.proceed).toBe(true);
+    expect(result.statusStr).toBe("dry-run");
+    expect(result.email).toBe("me@operator.dev");
+    const logs = getSentByLead(db, "test:999");
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe("dry-run");
+    // The synthetic lead is never persisted.
+    expect(getLead(db, "test:999")).toBeUndefined();
+  });
+
+  it("gate: dry-run test send proceeds while sendEnabled is off", () => {
+    setSetting(db, "sendEnabled", "false");
+    setSetting(db, "dryRun", "true");
+    const lead = makeFullyPreparedLead();
+    const result = runGateStack(db, lead, env, { allowDryRunWithoutSendEnabled: true });
+    expect(result.proceed).toBe(true);
+    expect(result.statusStr).toBe("dry-run");
+    // …but the same option does NOT relax a real send.
+    setSetting(db, "dryRun", "false");
+    const real = runGateStack(db, lead, env, { allowDryRunWithoutSendEnabled: true });
+    expect(real.proceed).toBe(false);
+    expect(real.reason).toMatch(/sendEnabled/);
+  });
+
   it("gate: blocked SIC code → blocked", () => {
     setSetting(db, "blockedSics", "62012");
     const lead = makeFullyPreparedLead();

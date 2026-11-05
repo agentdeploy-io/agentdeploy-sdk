@@ -32,6 +32,7 @@ import {
   Play,
   RefreshCw,
   Send,
+  SendHorizonal,
   ShieldAlert,
   Square,
   Timer,
@@ -41,7 +42,7 @@ import {
 } from "lucide-react";
 import { Badge, Button, Card, Dialog, Input, Skeleton, Textarea } from "@/components/ui";
 import { EmptyState } from "@/components/shared";
-import { authFetch, toast, useDeploymentSelector, useRuns } from "@/hooks";
+import { authFetch, toast, useDeploymentSelector, useRuns, useTestSend } from "@/hooks";
 
 interface CrawlRunEntry {
   id: string;
@@ -379,6 +380,22 @@ function CampaignPanel({
     }
   };
 
+  const { send: testSend, loading: testSendLoading } = useTestSend(deploymentId);
+
+  const sendTestToInbox = async () => {
+    const r = await testSend();
+    if (r && r.proceed) {
+      toast.success(
+        "Test send processed",
+        r.statusStr === "dry-run"
+          ? `Logged as dry-run for ${r.email}. Switch dry-run OFF + enable sending to receive a real email.`
+          : `Real email delivered to ${r.email} via Brevo — check your inbox.`
+      );
+    } else {
+      toast.error("Test send blocked", r?.reason ?? r?.error ?? "The engine refused the test send.");
+    }
+  };
+
   const setTestMode = async (on: boolean) => {
     setSaving(true);
     try {
@@ -472,11 +489,29 @@ function CampaignPanel({
               placeholder="you@yourdomain.com"
             />
           </label>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void sendTestToInbox()}
+            disabled={testSendLoading || saving || !data.testMode || !(form.testRecipient ?? "").trim()}
+            title={
+              !data.testMode
+                ? "Turn test mode on first"
+                : !(form.testRecipient ?? "").trim()
+                  ? "Set your test inbox address first"
+                  : "Send a synthetic test email to your inbox — works even with zero leads. With dry-run ON it only logs; with dry-run OFF + sending enabled it really emails you."
+            }
+          >
+            <SendHorizonal className="size-3.5" />
+            {testSendLoading ? "Sending…" : "Email my test inbox"}
+          </Button>
         </div>
         <p className="text-[0.6875rem] leading-snug text-muted-foreground">
           When on, every pitch and reply send is redirected to your test inbox — the
           lead keeps its own address on record and is never emailed. Dry-run /
           send-enabled still apply, so nothing leaves until you allow it.
+          "Email my test inbox" works even with zero leads — it runs a synthetic
+          test lead through the real gate stack.
         </p>
       </div>
 

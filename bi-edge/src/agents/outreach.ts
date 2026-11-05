@@ -152,10 +152,20 @@ function hasMxOk(lead: Lead): boolean {
   }
 }
 
+export interface OutreachOptions {
+  /**
+   * Dry-run test sends verify the pipeline; nothing can leave the building,
+   * so they may proceed even while sendEnabled is off. A real (dryRun off)
+   * test send still requires sendEnabled.
+   */
+  allowDryRunWithoutSendEnabled?: boolean;
+}
+
 export function runGateStack(
   db: Database.Database,
   lead: Lead,
   env: Record<string, unknown>,
+  options?: OutreachOptions,
 ): GateResult {
   const settings = {
     sendEnabled: isSendEnabled(db),
@@ -191,7 +201,10 @@ export function runGateStack(
     reason = "email MX check failed";
   } else if (isPaused(db)) {
     reason = "agent is paused (run /resume first)";
-  } else if (!settings.sendEnabled) {
+  } else if (
+    !settings.sendEnabled &&
+    !(options?.allowDryRunWithoutSendEnabled && settings.dryRun)
+  ) {
     reason = "sendEnabled is false (set it true in /settings)";
   } else if (sentToday >= settings.dailyCap) {
     reason = `daily cap reached (${sentToday}/${settings.dailyCap})`;
@@ -330,8 +343,9 @@ export async function runOutreach(
   db: Database.Database,
   lead: Lead,
   env: Record<string, unknown>,
+  options?: OutreachOptions,
 ): Promise<GateResult> {
-  const gate = runGateStack(db, lead, env);
+  const gate = runGateStack(db, lead, env, options);
 
   if (!gate.proceed) return gate;
 

@@ -257,7 +257,7 @@ export async function handleCommand(
       const prevDryRun = db.prepare("SELECT value FROM settings WHERE key = 'dryRun'").get() as { value: string } | undefined;
       setSetting(db, "dryRun", "true");
       try {
-        const result = await runOutreach(db, lead, env);
+        const result = await runOutreach(db, lead, env, { allowDryRunWithoutSendEnabled: true });
         if (prevDryRun) setSetting(db, "dryRun", prevDryRun.value);
         return `Test send: ${result.statusStr} — ${result.proceed ? "would send" : result.reason}`;
       } catch (e: any) {
