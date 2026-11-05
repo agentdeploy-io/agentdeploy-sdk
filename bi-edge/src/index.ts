@@ -257,7 +257,8 @@ export class BiEdgeAgent {
       url.pathname === "/cmd/runs" ||
       url.pathname === "/cmd/pipeline" ||
       url.pathname === "/cmd/replies" ||
-      url.pathname === "/cmd/sent"
+      url.pathname === "/cmd/sent" ||
+      url.pathname === "/cmd/blacklist"
     ) {
       return withCors(await handleDataApi(request, env, db as any));
     }
@@ -323,6 +324,20 @@ export class BiEdgeAgent {
       const m = url.pathname.match(/^\/cmd\/schedules\/([^/]+)\/run$/);
       if (m && request.method === "POST") {
         return withCors(await this.runScheduleNow(decodeURIComponent(m[1]), request, db, env));
+      }
+      // DELETE /cmd/schedules/:name — reset the schedule to its manifest
+      // defaults (crons are built-in settings, so "delete" = clear custom
+      // cron + re-enable; there is no such thing as a custom schedule).
+      const d = url.pathname.match(/^\/cmd\/schedules\/([^/]+)$/);
+      if (d && request.method === "DELETE") {
+        const name = decodeURIComponent(d[1]);
+        const manifest = SCHEDULE_MANIFEST.find((s) => s.name === name);
+        if (!manifest) {
+          return withCors(json({ error: `Unknown schedule: ${name}`, available: SCHEDULE_MANIFEST.map((s) => s.name) }, 404));
+        }
+        setSetting(db as any, `cron:${name}`, manifest.cron);
+        setSetting(db as any, `cron_enabled:${name}`, "1");
+        return withCors(json({ reset: name, schedule: this.scheduleView(db).find((s) => s.name === name) }));
       }
       return withCors(json({ error: "Not found", path: url.pathname }, 404));
     }
@@ -945,6 +960,7 @@ export class BiEdgeAgent {
       // { name } only → run now.
       try {
         const result = await CRON_NAME_MAP[name](env, db as any);
+        setSetting(db as any, `cron_last_run:${name}`, new Date().toISOString());
         return json({ triggered: name, result });
       } catch (e: any) {
         return json({ error: e.message }, 500);
@@ -974,6 +990,9 @@ export class BiEdgeAgent {
         name === "crawl"
           ? await (handler as typeof crawlCron)(env, db as any, { verticalId, trigger: "manual" })
           : await handler(env, db as any);
+      // Record manual runs too, so "Last run" and the next due-window
+      // reflect reality (alarm ticks only recorded their own runs before).
+      setSetting(db as any, `cron_last_run:${name}`, new Date().toISOString());
       return json({ triggered: name, verticalId: verticalId ?? null, result });
     } catch (e: any) {
       return json({ error: e.message, cron: name }, 500);

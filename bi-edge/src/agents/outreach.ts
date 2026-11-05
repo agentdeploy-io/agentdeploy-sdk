@@ -7,6 +7,8 @@ import {
   isBlacklisted,
   logSentEmail,
   countSentToday,
+  hasRealSendByLead,
+  hasRealSendByEmail,
   isPaused,
   isSendEnabled,
   isDryRun,
@@ -193,6 +195,10 @@ export function runGateStack(
     reason = "sendEnabled is false (set it true in /settings)";
   } else if (sentToday >= settings.dailyCap) {
     reason = `daily cap reached (${sentToday}/${settings.dailyCap})`;
+  } else if (hasRealSendByLead(db, lead.key)) {
+    reason = "already sent to this lead (see sent log) — re-sending is blocked";
+  } else if (!useTest && email && hasRealSendByEmail(db, email)) {
+    reason = "already sent to this email address (see sent log) — blocked";
   }
 
   if (!reason && lead && !useTest) {

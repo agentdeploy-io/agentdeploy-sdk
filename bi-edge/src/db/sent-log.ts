@@ -10,6 +10,8 @@ const SELECT_BY_LEAD = `SELECT * FROM sent_log WHERE lead_key = ? ORDER BY id DE
 const SELECT_RECENT = `SELECT * FROM sent_log ORDER BY id DESC LIMIT ?`;
 const COUNT_TODAY = `SELECT COUNT(*) as cnt FROM sent_log WHERE at >= ?`;
 const COUNT_TODAY_CHANNEL = `SELECT COUNT(*) as cnt FROM sent_log WHERE at >= ? AND channel = ?`;
+const HAS_REAL_SENT_BY_LEAD = `SELECT COUNT(*) as cnt FROM sent_log WHERE lead_key = ? AND status = 'sent'`;
+const HAS_REAL_SENT_BY_EMAIL = `SELECT COUNT(*) as cnt FROM sent_log WHERE email = ? AND status = 'sent'`;
 
 export function logSentEmail(db: Database.Database, entry: Omit<SentLogEntry, "id">): number {
   const result = db.prepare(INSERT_ENTRY).run({
@@ -30,6 +32,18 @@ export function getSentByLead(db: Database.Database, leadKey: string): SentLogEn
 
 export function listRecentSent(db: Database.Database, limit: number = 50): SentLogEntry[] {
   return db.prepare(SELECT_RECENT).all(limit) as SentLogEntry[];
+}
+
+/** True if this lead already has a REAL sent row (dry-run/failed rows don't count). */
+export function hasRealSendByLead(db: Database.Database, leadKey: string): boolean {
+  const row = db.prepare(HAS_REAL_SENT_BY_LEAD).get(leadKey) as { cnt: number };
+  return row.cnt > 0;
+}
+
+/** True if this email address was already really emailed — from any lead. */
+export function hasRealSendByEmail(db: Database.Database, email: string): boolean {
+  const row = db.prepare(HAS_REAL_SENT_BY_EMAIL).get(email) as { cnt: number };
+  return row.cnt > 0;
 }
 
 export function countSentToday(db: Database.Database, channel?: "email" | "manychat"): number {

@@ -32,13 +32,14 @@ import {
   Play,
   RefreshCw,
   Send,
+  ShieldAlert,
   Square,
   Timer,
   Trash2,
   Wand2,
   Zap,
 } from "lucide-react";
-import { Badge, Button, Card, Dialog, Skeleton, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Dialog, Input, Skeleton, Textarea } from "@/components/ui";
 import { EmptyState } from "@/components/shared";
 import { authFetch, toast, useDeploymentSelector, useRuns } from "@/hooks";
 
@@ -89,6 +90,31 @@ interface SentEntry {
   message_id: string | null;
   status: string;
   at: string;
+}
+
+// Engine GET /cmd/blacklist contract
+interface BlacklistEntry {
+  id: string;
+  kind: "email" | "domain" | "company";
+  note: string | null;
+  created_at: string;
+}
+
+// Engine GET /cmd/replies?status=resolved contract (reply outcomes)
+interface ReplyOutcome {
+  id: number;
+  lead_key: string;
+  lead_name: string;
+  reply_from: string;
+  intent: string | null;
+  draft_status: string | null;
+  at: string;
+}
+
+interface ComplianceData {
+  blacklist: BlacklistEntry[];
+  optedOut: Array<{ key: string; name: string; country: string }>;
+  resolved: ReplyOutcome[];
 }
 
 // Engine GET/POST /cmd/campaign contract
@@ -1559,6 +1585,11 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
   const [settingsBusy, setSettingsBusy] = React.useState(false);
 
   const [sent, setSent] = React.useState<SentEntry[] | null>(null);
+  const [compliance, setCompliance] = React.useState<ComplianceData | null>(null);
+  const [blId, setBlId] = React.useState("");
+  const [blKind, setBlKind] = React.useState<"email" | "domain" | "company">("email");
+  const [blNote, setBlNote] = React.useState("");
+  const [blBusy, setBlBusy] = React.useState(false);
   const [pendingDrafts, setPendingDrafts] = React.useState<number | null>(null);
   const [funnel, setFunnel] = React.useState<Array<{ stage: string; count: number }> | null>(null);
   const [scrapers, setScrapers] = React.useState<ScraperEntry[] | null>(null);
@@ -1579,7 +1610,7 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       setSchedulesError(null);
     }
     try {
-      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes, scrapersRes, manychatRes] =
+      const [schedRes, sentRes, repliesRes, secretsRes, settingsRes, pipelineRes, campaignRes, scrapersRes, manychatRes, blacklistRes, optedOutRes, resolvedRes] =
         await Promise.all([
           authFetch(`${proxyBase(deploymentId)}/cmd/schedules`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/sent?limit=20`, { signal: AbortSignal.timeout(10000) }),
@@ -1590,6 +1621,9 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
           authFetch(`${proxyBase(deploymentId)}/cmd/campaign`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/scrapers`, { signal: AbortSignal.timeout(10000) }),
           authFetch(`${proxyBase(deploymentId)}/cmd/manychat`, { signal: AbortSignal.timeout(15000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/blacklist`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/data?status=opted_out&pageSize=50`, { signal: AbortSignal.timeout(10000) }),
+          authFetch(`${proxyBase(deploymentId)}/cmd/replies?status=resolved&limit=20`, { signal: AbortSignal.timeout(10000) }),
         ]);
       if (schedRes.ok) {
         const j = (await schedRes.json()) as { schedules: OpSchedule[]; paused: boolean };
@@ -1632,6 +1666,18 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
       if (manychatRes.ok) {
         setManychat((await manychatRes.json()) as ManyChatStatus);
       }
+      if (blacklistRes.ok && optedOutRes.ok && resolvedRes.ok) {
+        const [blJ, ooJ, rsJ] = await Promise.all([
+          blacklistRes.json() as Promise<{ blacklist: BlacklistEntry[] }>,
+          optedOutRes.json() as Promise<{ rows: Array<{ key: string; name: string; country: string }> }>,
+          resolvedRes.json() as Promise<{ replies: ReplyOutcome[] }>,
+        ]);
+        setCompliance({
+          blacklist: blJ.blacklist ?? [],
+          optedOut: (ooJ.rows ?? []).map((l) => ({ key: l.key, name: l.name, country: l.country })),
+          resolved: rsJ.replies ?? [],
+        });
+      }
     } catch (err) {
       if (!quiet) setSchedulesError(err instanceof Error ? err.message : "Failed to load operations state");
     } finally {
@@ -1646,6 +1692,46 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
     const id = setInterval(() => loadAll(true), 5000);
     return () => clearInterval(id);
   }, [loadAll]);
+
+  const addBlacklistEntry = async () => {
+    if (!deploymentId || !blId.trim()) return;
+    setBlBusy(true);
+    try {
+      const res = await authFetch(`${proxyBase(deploymentId)}/cmd/blacklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: blId.trim(), kind: blKind, note: blNote.trim() || undefined }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      toast.success("Added to do-not-contact", `${blId.trim()} will never be emailed again.`);
+      setBlId("");
+      setBlNote("");
+      loadAll(true);
+    } catch (err) {
+      toast.error("Failed to add to blacklist", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setBlBusy(false);
+    }
+  };
+
+  const removeBlacklistEntry = async (id: string) => {
+    if (!deploymentId) return;
+    setBlBusy(true);
+    try {
+      const res = await authFetch(
+        `${proxyBase(deploymentId)}/cmd/blacklist?id=${encodeURIComponent(id)}`,
+        { method: "DELETE", signal: AbortSignal.timeout(10000) }
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      toast.success("Removed from do-not-contact");
+      loadAll(true);
+    } catch (err) {
+      toast.error("Failed to remove", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setBlBusy(false);
+    }
+  };
 
   const lastRun: CrawlRunEntry | undefined = runs[0];
   const lastRunAt = lastRun?.started_at ?? lastRun?.startedAt ?? null;
@@ -2139,6 +2225,153 @@ export function OperationsSection({ onNavigate }: { onNavigate: (path: string) =
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </Panel>
+
+      {/* ── Compliance & follow-up ─────────────────────────── */}
+      <Panel
+        title="Compliance & follow-up"
+        icon={<ShieldAlert className="size-4" />}
+        subtitle="Who replied, who said no, and the do-not-contact list. Every entry below is enforced by the send gates — a blacklisted or opted-out contact can never be emailed."
+      >
+        {compliance === null ? (
+          <Skeleton className="h-24 w-full" />
+        ) : (
+          <div className="space-y-5">
+            <div>
+              <p className="mb-1.5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
+                Reply outcomes
+              </p>
+              {compliance.resolved.length === 0 ? (
+                <p className="text-[0.8125rem] text-muted-foreground">
+                  No inbound replies recorded yet. Replies land here once recipients answer.
+                </p>
+              ) : (
+                <div className="scrollbar-thin -mx-1 overflow-x-auto px-1">
+                  <table className="w-full min-w-[480px] text-left text-[0.8125rem]">
+                    <thead>
+                      <tr className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
+                        <th className="pb-2 pr-3 font-medium">When</th>
+                        <th className="pb-2 pr-3 font-medium">Lead</th>
+                        <th className="pb-2 pr-3 font-medium">From</th>
+                        <th className="pb-2 pr-3 font-medium">Intent</th>
+                        <th className="pb-2 font-medium">Reply status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {compliance.resolved.map((r) => (
+                        <tr key={r.id} className="border-t border-border">
+                          <td className="whitespace-nowrap py-1.5 pr-3 text-muted-foreground">{relativeTime(r.at)}</td>
+                          <td className="max-w-44 truncate py-1.5 pr-3 text-foreground">{r.lead_name || r.lead_key}</td>
+                          <td className="max-w-44 truncate py-1.5 pr-3 text-muted-foreground">{r.reply_from}</td>
+                          <td className="py-1.5 pr-3">
+                            <Badge
+                              variant={
+                                r.intent === "interested"
+                                  ? "success"
+                                  : r.intent === "question"
+                                    ? "info"
+                                    : r.intent
+                                      ? "error"
+                                      : "muted"
+                              }
+                            >
+                              {r.intent ?? "unknown"}
+                            </Badge>
+                          </td>
+                          <td className="py-1.5">
+                            <Badge variant={r.draft_status === "sent" ? "default" : "secondary"}>
+                              {r.draft_status ?? "—"}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
+                Opted out ({compliance.optedOut.length})
+              </p>
+              {compliance.optedOut.length === 0 ? (
+                <p className="text-[0.8125rem] text-muted-foreground">
+                  Nobody has opted out. Opt-outs (Brevo STOP / manual) are permanent and gate-blocked.
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {compliance.optedOut.map((l) => (
+                    <li key={l.key} className="flex items-center gap-2 text-[0.8125rem]">
+                      <Badge variant="error">do-not-contact</Badge>
+                      <span className="text-foreground">{l.name}</span>
+                      <span className="truncate text-muted-foreground">{l.key}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <p className="mb-1.5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
+                Do-not-contact list ({compliance.blacklist.length})
+              </p>
+              {compliance.blacklist.length === 0 ? (
+                <p className="text-[0.8125rem] text-muted-foreground">
+                  Empty. Add an email, domain or company below — it is checked by every send gate.
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {compliance.blacklist.map((b) => (
+                    <li key={`${b.kind}:${b.id}`} className="flex items-center gap-2 text-[0.8125rem]">
+                      <Badge variant="warning">{b.kind}</Badge>
+                      <span className="truncate text-foreground">{b.id}</span>
+                      {b.note && <span className="truncate text-muted-foreground">— {b.note}</span>}
+                      <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">
+                        {relativeTime(b.created_at)}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={blBusy}
+                        onClick={() => removeBlacklistEntry(b.id)}
+                        title="Remove from do-not-contact"
+                      >
+                        <Trash2 />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Input
+                  value={blId}
+                  onChange={(e) => setBlId(e.target.value)}
+                  placeholder={blKind === "email" ? "name@company.com" : blKind === "domain" ? "company.com" : "Company Name Ltd"}
+                  className="h-8 w-56 text-[0.8125rem]"
+                />
+                <select
+                  value={blKind}
+                  onChange={(e) => setBlKind(e.target.value as "email" | "domain" | "company")}
+                  className="h-8 rounded-md border border-border bg-background px-2 text-[0.8125rem]"
+                >
+                  <option value="email">email</option>
+                  <option value="domain">domain</option>
+                  <option value="company">company</option>
+                </select>
+                <Input
+                  value={blNote}
+                  onChange={(e) => setBlNote(e.target.value)}
+                  placeholder="note (optional)"
+                  className="h-8 w-40 text-[0.8125rem]"
+                />
+                <Button size="sm" variant="outline" disabled={blBusy || !blId.trim()} onClick={addBlacklistEntry}>
+                  Add
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </Panel>

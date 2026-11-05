@@ -13,6 +13,9 @@ import {
   getPendingDrafts,
   listRecentReplies,
   listRecentSent,
+  listBlacklist,
+  addToBlacklist,
+  removeFromBlacklist,
   SCHEMA_V1,
   runMigrations,
 } from "../db/index.js";
@@ -131,6 +134,10 @@ export async function handleDataApi(
 
   if (url.pathname === "/cmd/sent" && request.method === "GET") {
     return handleSentLog(url, externalDb);
+  }
+
+  if (url.pathname === "/cmd/blacklist") {
+    return handleBlacklist(request, url, externalDb);
   }
 
   return new Response(
@@ -574,6 +581,59 @@ function handleSentLog(url: URL, externalDb?: DatabaseType.Database): Response {
   }
 }
 
+/**
+ * /cmd/blacklist — do-not-contact list.
+ * GET → list · POST {id, kind, note?} → add · DELETE ?id= → remove.
+ */
+async function handleBlacklist(request: Request, url: URL, externalDb?: DatabaseType.Database): Promise<Response> {
+  const { db, own } = useDb(externalDb);
+  try {
+    if (request.method === "GET") {
+      const entries = listBlacklist(db);
+      if (own) db.close();
+      return new Response(JSON.stringify({ blacklist: entries }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (request.method === "POST") {
+      let body: { id?: string; kind?: string; note?: string };
+      try {
+        body = (await request.json()) as { id?: string; kind?: string; note?: string };
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      const kind = body.kind === "domain" || body.kind === "company" ? body.kind : "email";
+      if (!body.id) {
+        if (own) db.close();
+        return new Response(JSON.stringify({ error: "id required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      addToBlacklist(db, body.id, kind, body.note);
+      if (own) db.close();
+      return new Response(JSON.stringify({ added: body.id, kind }), { headers: { "Content-Type": "application/json" } });
+    }
+
+    if (request.method === "DELETE") {
+      const id = url.searchParams.get("id");
+      if (!id) {
+        if (own) db.close();
+        return new Response(JSON.stringify({ error: "id required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      const removed = removeFromBlacklist(db, id);
+      if (own) db.close();
+      return removed
+        ? new Response(JSON.stringify({ deleted: id }), { headers: { "Content-Type": "application/json" } })
+        : new Response(JSON.stringify({ error: "not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
+    }
+
+    if (own) db.close();
+    return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: { "Content-Type": "application/json" } });
+  } catch (e: any) {
+    if (own) db.close();
+    return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
+}
+
 function handlePipeline(externalDb?: DatabaseType.Database): Response {
   const { db, own } = useDb(externalDb);
   try {
@@ -587,6 +647,7 @@ function handlePipeline(externalDb?: DatabaseType.Database): Response {
       "sent",
       "replied",
     ].map((stage) => ({ stage, count: counts[stage] ?? 0 }));
+    const lastCrawl = listCrawlRuns(db, 1)[0] ?? null;
 
     if (own) db.close();
     return new Response(
@@ -594,6 +655,7 @@ function handlePipeline(externalDb?: DatabaseType.Database): Response {
         stages: counts,
         funnel,
         total: Object.values(counts).reduce((a, b) => a + b, 0),
+        lastCrawl,
       }),
       { headers: { "Content-Type": "application/json" } },
     );

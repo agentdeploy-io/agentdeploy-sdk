@@ -143,6 +143,54 @@ describe("outreach-gates integration", () => {
     expect(result.reason).toMatch(/daily cap/);
   });
 
+  it("gate: already sent to this lead → blocked even if re-approved", () => {
+    logSentEmail(db, {
+      lead_key: "uk/outreach-001",
+      email: "hello@acmedigital.co.uk",
+      subject: "prior send",
+      message_id: "msg-prior",
+      status: "sent",
+      at: new Date().toISOString(),
+    });
+    // Operator re-approves the already-sent lead (status back to approved) —
+    // the sent_log guard must still block, so the same business is never
+    // emailed twice.
+    const lead = makeFullyPreparedLead({ stage: "approved", status: "approved" });
+    const result = runGateStack(db, lead, env);
+    expect(result.proceed).toBe(false);
+    expect(result.reason).toMatch(/already sent to this lead/);
+  });
+
+  it("gate: already sent to this email from another lead → blocked", () => {
+    logSentEmail(db, {
+      lead_key: "uk/duplicate-lead",
+      email: "hello@acmedigital.co.uk",
+      subject: "prior send",
+      message_id: "msg-dup",
+      status: "sent",
+      at: new Date().toISOString(),
+    });
+    const lead = makeFullyPreparedLead();
+    const result = runGateStack(db, lead, env);
+    expect(result.proceed).toBe(false);
+    expect(result.reason).toMatch(/already sent to this email address/);
+  });
+
+  it("gate: prior dry-run rows do not block a real send", () => {
+    logSentEmail(db, {
+      lead_key: "uk/outreach-001",
+      email: "hello@acmedigital.co.uk",
+      subject: "dry run",
+      message_id: null,
+      status: "dry-run",
+      at: new Date().toISOString(),
+    });
+    const lead = makeFullyPreparedLead();
+    const result = runGateStack(db, lead, env);
+    expect(result.proceed).toBe(true);
+    expect(result.reason).toBe("");
+  });
+
   it("gate: blacklisted email → blocked", () => {
     addToBlacklist(db, "hello@acmedigital.co.uk", "email", "reported spam");
     const lead = makeFullyPreparedLead();
