@@ -714,6 +714,7 @@ function buildPrompt(msg: SocialInbound): string {
     msg.text,
     "",
     `Reply in persona: warm, helpful, and under ${MAX_REPLY_CHARS} characters. Plain text only (no markdown, no hashtags).`,
+    `Output ONLY the final reply text — no preamble, no internal reasoning, no skill or identity activation commentary, and no description of what you are doing. The first character you output is the first character of the public reply.`,
   ].join("\n");
 }
 
