@@ -19,6 +19,8 @@ import { insertBooking, findExistingBooking } from "../db/bookings.js";
 import { getFirstEmail } from "../agents/outreach.js";
 import { sendReplyDraft } from "../agents/supervisor.js";
 import { sendCalendarInvite } from "../agents/calendar-invite.js";
+import { matchReplyCandidates, leadEmailAddresses } from "../reply-match.js";
+import type { InboundMailItem, SentLeadRef } from "../reply-match.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -43,17 +45,9 @@ interface BrevoWebhookPayload {
   MessageId?: string;
 }
 
-interface NormalizedItem {
-  messageId: string;
-  from: string;
-  fromName: string;
-  subject: string;
-  body: string;
-  at: string;
-  spam: number;
-}
+ type NormalizedItem = InboundMailItem;
 
-function normalizeWebhook(payload: BrevoWebhookPayload, seenIds: string[]): {
+ function normalizeWebhook(payload: BrevoWebhookPayload, seenIds: string[]): {
   items: NormalizedItem[];
   allSeen: string[];
 } {
@@ -91,8 +85,8 @@ function normalizeWebhook(payload: BrevoWebhookPayload, seenIds: string[]): {
 }
 
 async function classifyReplyIntent(
-  items: NormalizedItem[],
-  sentLeads: Array<{ key: string; name: string; email: string; subject: string }>,
+  items: Array<NormalizedItem & { candidates: string[] }>,
+  sentLeads: SentLeadRef[],
   env: Record<string, unknown>,
   db?: DatabaseType.Database,
 ): Promise<
@@ -121,15 +115,23 @@ async function classifyReplyIntent(
       messages: [
         {
           role: "system",
-          content: `You classify inbound email replies to an outreach thread from ${brandName}.
-Match each inbound event to a sent lead by recipient email or reply-thread subject.
-Classify intent: interested, question, not_interested, opt_out, or spam.
-For opt_out set permanent true.
+          content: `You classify intent for inbound emails that have ALREADY been deterministically matched (by sender address or thread subject) to candidate outreach leads from ${brandName}.
+Each event lists its candidate leadKeys. For each event: choose exactly one leadKey from its own candidates, and classify intent: interested, question, not_interested, opt_out, or spam. For opt_out set permanent true.
+If an event is clearly not a reply to its candidate lead (unrelated content), omit it from the output.
+HARD RULES: never output a leadKey that is not in that event's candidates; the "email" field must be the event's own sender address, never an address from another event; if nothing is a genuine reply return {"replies": []}.
 Return ONLY JSON: {"replies": [{"leadKey":"...","email":"...","intent":"...","permanent":false,"summary":"...","replyFrom":"...","replySubject":"...","replyBody":"..."}]}`,
         },
         {
           role: "user",
-          content: JSON.stringify({ leads: sentLeads, events: { items } }),
+          content: JSON.stringify({
+            leads: sentLeads,
+            events: items.map((i) => ({
+              from: i.from,
+              subject: i.subject,
+              body: i.body,
+              candidates: i.candidates,
+            })),
+          }),
         },
       ],
     }),
@@ -144,12 +146,23 @@ Return ONLY JSON: {"replies": [{"leadKey":"...","email":"...","intent":"...","pe
       stage: "reply-classify",
       leadKey: repliesRaw.length === 1 ? String(repliesRaw[0]?.leadKey ?? "") : `${repliesRaw.length} replies`,
       model: String(env.AD_MODEL ?? ""),
-      promptExcerpt: JSON.stringify({ leads: sentLeads.map((l) => l.key), events: items.map((i) => ({ from: i.from, subject: i.subject, body: i.body.slice(0, 200) })) }),
+      promptExcerpt: JSON.stringify({ leads: sentLeads.map((l) => l.key), events: items.map((i) => ({ from: i.from, subject: i.subject, candidates: i.candidates, body: i.body.slice(0, 200) })) }),
       rawResponse: JSON.stringify(raw),
       latencyMs: Date.now() - t0,
     });
   }
-  const replies = repliesRaw;
+
+  // Post-validation: the LLM may only keep replies whose leadKey is a
+  // candidate for the event's own sender, and whose email IS that sender.
+  const candidatesByFrom = new Map<string, string[]>();
+  for (const i of items) candidatesByFrom.set(i.from.trim().toLowerCase(), i.candidates);
+  const replies = repliesRaw.filter((r: any) => {
+    const cands = candidatesByFrom.get(String(r.replyFrom ?? "").trim().toLowerCase());
+    if (!cands || !cands.includes(String(r.leadKey ?? ""))) return false;
+    const item = items.find((i) => i.from.trim().toLowerCase() === String(r.replyFrom ?? "").trim().toLowerCase());
+    if (!item) return false;
+    return String(r.email ?? "").trim().toLowerCase() === item.from.trim().toLowerCase();
+  });
 
   return replies.map((r: any) => ({
     leadKey: String(r.leadKey ?? ""),
@@ -217,27 +230,36 @@ export async function handleInboundWebhook(
 
     const sentLog = listRecentSent(db, 500);
     const sentLeadKeys = new Set(sentLog.map((s) => s.lead_key));
-    const sentLeads: Array<{ key: string; name: string; email: string; subject: string }> = [];
+    const sentLeads: SentLeadRef[] = [];
     for (const key of sentLeadKeys) {
       const lead = getLead(db, key);
       if (lead && (lead.status === "sent" || lead.status === "replied" || lead.stage === "sent")) {
-        let email = "";
-        try {
-          const parsed = JSON.parse(lead.emails ?? "[]");
-          email = Array.isArray(parsed) && parsed[0] ? parsed[0].addr ?? String(parsed[0]) : "";
-        } catch {
-          email = lead.emails ?? "";
+        // Every address this lead has actually been emailed: all addresses
+        // on the lead record plus each sent-log row (test mode re-routes
+        // sends to the test recipient, and replies come back from THAT).
+        const emails = new Set<string>();
+        for (const addr of leadEmailAddresses(lead)) emails.add(addr);
+        for (const row of sentLog) {
+          if (row.lead_key === key && row.email) emails.add(row.email);
         }
         sentLeads.push({
           key: lead.key,
           name: lead.name,
-          email,
+          emails: [...emails],
           subject: lead.pitch_subject ?? "",
         });
       }
     }
 
-    const classified = await classifyReplyIntent(items, sentLeads, env, db);
+    const candidateItems = matchReplyCandidates(items, sentLeads);
+    console.log(
+      `[webhook] candidates: ${candidateItems.length}/${items.length} after address/subject match`,
+    );
+
+    const classified =
+      candidateItems.length > 0
+        ? await classifyReplyIntent(candidateItems, sentLeads, env, db)
+        : [];
 
     let matched = 0;
     let interested = 0;

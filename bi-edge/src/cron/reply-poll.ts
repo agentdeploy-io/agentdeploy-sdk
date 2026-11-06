@@ -15,6 +15,7 @@ import {
 import type { Lead, ReplyIntent } from "../db/types.js";
 import { gatewayFetchWithBackoff, gatewayHeaders, parseLlmJson } from "@agentdeploy-io/edge-sdk";
 import { sendReplyDraft } from "../agents/supervisor.js";
+import { matchReplyCandidates, leadEmailAddresses, type SentLeadRef } from "../reply-match.js";
 
 function initDb(): DatabaseType.Database {
   const db = new Database(":memory:");
@@ -69,8 +70,8 @@ function normalizeInbound(raw: BrevoInboundEvent[]): NormalizedItem[] {
 }
 
 async function classifyReplyIntent(
-  items: NormalizedItem[],
-  sentLeads: Array<{ key: string; name: string; email: string }>,
+  items: Array<NormalizedItem & { candidates: string[] }>,
+  sentLeads: SentLeadRef[],
   env: Record<string, unknown>,
 ): Promise<
   Array<{
@@ -97,15 +98,23 @@ async function classifyReplyIntent(
       messages: [
         {
           role: "system",
-          content: `You classify inbound email replies to an outreach thread from ${brandName}.
-Match each inbound event to a sent lead by recipient email or reply-thread subject.
-Classify intent: interested, question, not_interested, opt_out, or spam.
-For opt_out set permanent true.
+          content: `You classify intent for inbound emails that have ALREADY been deterministically matched (by sender address or thread subject) to candidate outreach leads from ${brandName}.
+Each event lists its candidate leadKeys. For each event: choose exactly one leadKey from its own candidates, and classify intent: interested, question, not_interested, opt_out, or spam. For opt_out set permanent true.
+If an event is clearly not a reply to its candidate lead, omit it from the output.
+HARD RULES: never output a leadKey that is not in that event's candidates; the "email" field must be the event's own sender address, never an address from another event; if nothing is a genuine reply return {"replies": []}.
 Return ONLY JSON: {"replies": [{"leadKey":"...","email":"...","intent":"...","permanent":false,"summary":"...","replyFrom":"...","replySubject":"...","replyBody":"..."}]}`,
         },
         {
           role: "user",
-          content: JSON.stringify({ leads: sentLeads, events: { items } }),
+          content: JSON.stringify({
+            leads: sentLeads,
+            events: items.map((i) => ({
+              from: i.from,
+              subject: i.subject,
+              body: i.body,
+              candidates: i.candidates,
+            })),
+          }),
         },
       ],
     }),
@@ -114,7 +123,19 @@ Return ONLY JSON: {"replies": [{"leadKey":"...","email":"...","intent":"...","pe
   if (!res.ok) return [];
 
   const raw = parseLlmJson(await res.json());
-  const replies = Array.isArray(raw.replies) ? raw.replies : [];
+  const repliesRaw: any[] = Array.isArray(raw.replies) ? raw.replies : [];
+
+  // Post-validation: the LLM may only keep replies whose leadKey is a
+  // candidate for the event's own sender, and whose email IS that sender.
+  const candidatesByFrom = new Map<string, string[]>();
+  for (const i of items) candidatesByFrom.set(i.from.trim().toLowerCase(), i.candidates);
+  const replies = repliesRaw.filter((r: any) => {
+    const cands = candidatesByFrom.get(String(r.replyFrom ?? "").trim().toLowerCase());
+    if (!cands || !cands.includes(String(r.leadKey ?? ""))) return false;
+    const item = items.find((i) => i.from.trim().toLowerCase() === String(r.replyFrom ?? "").trim().toLowerCase());
+    if (!item) return false;
+    return String(r.email ?? "").trim().toLowerCase() === item.from.trim().toLowerCase();
+  });
 
   return replies.map((r: any) => ({
     leadKey: String(r.leadKey ?? ""),
@@ -200,22 +221,24 @@ export async function replyPollCron(env: Record<string, unknown>, externalDb?: D
 
     const sentLog = listRecentSent(db, 500);
     const sentLeadKeys = new Set(sentLog.map((s) => s.lead_key));
-    const sentLeads: Array<{ key: string; name: string; email: string }> = [];
+    const sentLeads: SentLeadRef[] = [];
     for (const key of sentLeadKeys) {
       const lead = getLead(db, key);
       if (lead) {
-        let email = "";
-        try {
-          const parsed = JSON.parse(lead.emails ?? "[]");
-          email = Array.isArray(parsed) && parsed[0] ? parsed[0].addr ?? String(parsed[0]) : "";
-        } catch {
-          email = lead.emails ?? "";
+        const emails = new Set<string>();
+        for (const addr of leadEmailAddresses(lead)) emails.add(addr);
+        for (const row of sentLog) {
+          if (row.lead_key === key && row.email) emails.add(row.email);
         }
-        sentLeads.push({ key: lead.key, name: lead.name, email });
+        sentLeads.push({ key: lead.key, name: lead.name, emails: [...emails], subject: lead.pitch_subject ?? "" });
       }
     }
 
-    const classified = await classifyReplyIntent(items, sentLeads, env);
+    // Same deterministic pre-match as the webhook path: only items that come
+    // from an emailed address or thread a pitch subject reach the classifier.
+    const candidateItems = matchReplyCandidates(items, sentLeads);
+    const classified =
+      candidateItems.length > 0 ? await classifyReplyIntent(candidateItems, sentLeads, env) : [];
 
     let matched = 0;
     let interested = 0;

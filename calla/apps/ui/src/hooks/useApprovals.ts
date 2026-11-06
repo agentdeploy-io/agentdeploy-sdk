@@ -160,7 +160,7 @@ function str(value: unknown): string | undefined {
 }
 
 function rowTimestamp(row: Record<string, unknown>): string {
-  for (const key of ["updated_at", "updatedAt", "created_at", "createdAt"]) {
+  for (const key of ["updated_at", "updatedAt", "created_at", "createdAt", "at"]) {
     const v = str(row[key]);
     if (v) return v;
   }
