@@ -167,6 +167,7 @@ export class BiEdgeAgent {
   private state: DurableObjectState;
   private env: Env;
   private db: CfSqlDatabase | null = null;
+  private journalReconciled = false;
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -181,6 +182,26 @@ export class BiEdgeAgent {
     return this.db;
   }
 
+  /**
+   * Re-hydrate sent_log from the append-only send journal (which lives
+   * outside the state directory) so the double-send guard still blocks
+   * already-emailed leads even if the state DB was lost. No-op when the
+   * runtime has no filesystem (production Workers) or the journal is empty.
+   */
+  private async ensureJournalReconciled(db: CfSqlDatabase): Promise<void> {
+    if (this.journalReconciled) return;
+    this.journalReconciled = true;
+    try {
+      const { reconcileSendJournal } = await import("./db/send-journal.js");
+      const restored = await reconcileSendJournal(db as any);
+      if (restored > 0) {
+        console.log(`[bi-edge] journal: restored ${restored} sent_log entries`);
+      }
+    } catch {
+      /* journal is best-effort — never block a request */
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -193,6 +214,7 @@ export class BiEdgeAgent {
     // writer / outreach / reply-drafter pick them up without a redeploy.
     const env = { ...baseEnv, ...campaignEnvOverrides(db as any, baseEnv) };
 
+    await this.ensureJournalReconciled(db);
     await this.ensureAlarmArmed();
 
     if (url.pathname === "/health") {

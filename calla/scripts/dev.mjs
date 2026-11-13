@@ -32,8 +32,9 @@
   */
 
 import { spawn, execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync, mkdirSync, cpSync, renameSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +55,23 @@ const REDDIT_MCP_PORT = Number(process.env.REDDIT_MCP_PORT ?? 3011);
 // Real lead-gen engine (packages/bi-edge), sibling of packages/calla.
 const ENGINE_DIR = resolve(ROOT, "..", "bi-edge");
 const ENGINE_ENTRY = resolve(ROOT, "scripts", "bi-edge-dev-entry.ts");
-const ENGINE_STATE_DIR = "/tmp/calla-bi-edge-state";
+// The DO state is the outreach ledger (leads, sent_log, replies, bookings) —
+// it must survive reboots. /tmp gets wiped, which once erased the whole
+// "who did we already email" memory; keep it under $HOME instead.
+const LEGACY_ENGINE_STATE_DIR = "/tmp/calla-bi-edge-state";
+const ENGINE_STATE_DIR =
+  process.env.CALLA_ENGINE_STATE_DIR ?? join(homedir(), ".local", "share", "calla", "bi-edge-state");
+if (existsSync(LEGACY_ENGINE_STATE_DIR) && !existsSync(ENGINE_STATE_DIR)) {
+  // One-time migration of state created when the engine persisted to /tmp.
+  try {
+    renameSync(LEGACY_ENGINE_STATE_DIR, ENGINE_STATE_DIR);
+  } catch {
+    try {
+      mkdirSync(dirname(ENGINE_STATE_DIR), { recursive: true });
+      cpSync(LEGACY_ENGINE_STATE_DIR, ENGINE_STATE_DIR, { recursive: true });
+    } catch { /* fresh start */ }
+  }
+}
 // Prefer calla's local wrangler; fall back to npx (downloads on demand).
 const LOCAL_WRANGLER = resolve(ROOT, "node_modules", ".bin", "wrangler");
 

@@ -177,7 +177,7 @@ describe("simulate-reply (synthetic inbound webhook)", () => {
     );
     mockedFetch.mockImplementation(async (_url, init?: any) => {
       const body = JSON.parse(init.body);
-      const isClassify = body.messages[0].content.includes("You classify inbound email");
+      const isClassify = body.messages[0].content.includes("You classify intent for inbound emails");
       if (isClassify) {
         return {
           ok: true,
@@ -189,8 +189,8 @@ describe("simulate-reply (synthetic inbound webhook)", () => {
                 intent: "interested",
                 permanent: false,
                 summary: "wants a call",
-                replyFrom: "founder@gradient3.io",
-                replySubject: "Re: quick question",
+                replyFrom: "hello@acmedigital.co.uk",
+                replySubject: "Re: Quick question about your intake process",
                 replyBody: "Yes, we could use help with this. Could we hop on a call?",
               }],
             }) } }],
@@ -201,7 +201,7 @@ describe("simulate-reply (synthetic inbound webhook)", () => {
         ok: true,
         json: async () => ({
           choices: [{ message: { content: JSON.stringify({
-            replies: [{ key: lead.key, subject: "Re: quick question", body: "Absolutely — how about Tuesday?" }],
+            replies: [{ key: lead.key, subject: "Re: Quick question about your intake process", body: "Absolutely — how about Tuesday?" }],
           }) } }],
         }),
       } as any;
@@ -210,8 +210,8 @@ describe("simulate-reply (synthetic inbound webhook)", () => {
     const payload = {
       items: [{
         MessageId: "sim-test-1",
-        From: { Address: "founder@gradient3.io", Name: "" },
-        Subject: "Re: quick question",
+        From: { Address: "hello@acmedigital.co.uk", Name: "" },
+        Subject: "Re: Quick question about your intake process",
         RawTextBody: "Yes, we could use help with this.",
         SentAtDate: new Date().toISOString(),
         SpamScore: 0,
@@ -263,7 +263,7 @@ function mockLlmAndBrevo(leadKey: string, replyFrom: string, replyBody: string, 
   });
   mockedFetch.mockImplementation(async (url: any, init?: any) => {
     const body = JSON.parse(init.body);
-    const isClassify = body.messages[0].content.includes("You classify inbound email");
+    const isClassify = body.messages[0].content.includes("You classify intent for inbound emails");
     if (isClassify) {
       return {
         ok: true,

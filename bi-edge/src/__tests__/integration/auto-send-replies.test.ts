@@ -77,7 +77,7 @@ function mockLlm() {
   vi.mocked(parseLlmJson).mockImplementation((x: any) => JSON.parse(x.choices[0].message.content));
   mockedFetch.mockImplementation(async (_url, init?: any) => {
     const body = JSON.parse(init!.body);
-    const isClassify = body.messages[0].content.includes("You classify inbound email");
+    const isClassify = body.messages[0].content.includes("You classify intent for inbound emails");
     const classify = {
       replies: [
         {

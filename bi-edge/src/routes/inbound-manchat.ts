@@ -2,7 +2,7 @@
 
 import type Database from "better-sqlite3";
 import type DatabaseType from "better-sqlite3";
-import { getLead, upsertLead, logLlmTrace } from "../db/index.js";
+import { getLead, upsertLead, updateLead, logLlmTrace } from "../db/index.js";
 import type { Lead, ReplyIntent } from "../db/types.js";
 import { processDmInbound } from "../agents/dm-reply.js";
 
@@ -196,6 +196,12 @@ export async function handleManychatWebhook(
   }
 
   upsertLead(db, lead);
+  // The upsert preserves the stored research for a known lead (crawl
+  // re-syncs must not clobber pipeline data), so apply the appended DM
+  // history explicitly.
+  if (existing && lead.research !== existing.research) {
+    updateLead(db, key, { research: lead.research });
+  }
 
   // Two-way loop: classify + (if warranted) draft a reply. Best-effort —
   // the lead is already saved by the time this runs; a slow/failed LLM

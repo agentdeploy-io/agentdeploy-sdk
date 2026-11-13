@@ -31,6 +31,27 @@ export function getSentByLead(db: Database.Database, leadKey: string): SentLogEn
   return db.prepare(SELECT_BY_LEAD).all(leadKey) as SentLogEntry[];
 }
 
+/** Canonical RFC 5322 message-id: exactly one pair of angle brackets. */
+export function canonicalMessageId(raw: string): string {
+  const t = raw.trim();
+  return t.startsWith("<") && t.endsWith(">") ? t : `<${t}>`;
+}
+
+/** RFC 5322 threading headers for the NEXT outbound email to this lead:
+ *  In-Reply-To = the last real message we sent them, References = the full
+ *  chain oldest→newest, so replies stay in the same thread as the pitch.
+ *  Empty object when the lead has no real sends (a new thread starts). */
+export function threadHeadersForLead(db: Database.Database, leadKey: string): Record<string, string> {
+  const rows = getSentByLead(db, leadKey).filter((r) => r.status === "sent" && r.message_id);
+  if (rows.length === 0) return {};
+  const oldestFirst = [...rows].reverse(); // SELECT_BY_LEAD is id DESC
+  const ids = oldestFirst.map((r) => canonicalMessageId(r.message_id!));
+  return {
+    "In-Reply-To": ids[ids.length - 1],
+    References: ids.join(" "),
+  };
+}
+
 export function listRecentSent(db: Database.Database, limit: number = 50): SentLogEntry[] {
   return db.prepare(SELECT_RECENT).all(limit) as SentLogEntry[];
 }

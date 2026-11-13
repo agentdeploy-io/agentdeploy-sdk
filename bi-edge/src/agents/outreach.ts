@@ -2,6 +2,7 @@
 
 import type Database from "better-sqlite3";
 import type { Lead } from "../db/types.js";
+import { appendSendToJournal } from "../db/send-journal.js";
 import {
   updateLead,
   isBlacklisted,
@@ -303,7 +304,12 @@ export async function sendViaBrevo(
   subject: string,
   html: string,
   env: Record<string, unknown>,
-  options?: { attachment?: { filename: string; contentBase64: string } },
+  options?: {
+    attachment?: { filename: string; contentBase64: string };
+    /** Raw RFC 5322 headers (e.g. In-Reply-To / References) — verified
+     *  against the live Brevo API: they are delivered as sent. */
+    headers?: Record<string, string>;
+  },
 ): Promise<{ messageId: string }> {
   const apiKey = env.BREVO_API_KEY as string;
   const senderEmail = String(env.BREVO_SENDER_EMAIL ?? "noreply@example.com");
@@ -319,6 +325,9 @@ export async function sendViaBrevo(
   if (options?.attachment) {
     // Brevo /v3/smtp/email: array of {name, content(base64)} objects.
     body.attachment = [{ name: options.attachment.filename, content: options.attachment.contentBase64 }];
+  }
+  if (options?.headers && Object.keys(options.headers).length > 0) {
+    body.headers = options.headers;
   }
 
   const res = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -371,13 +380,23 @@ export async function runOutreach(
       env,
     );
 
+    const at = new Date().toISOString();
     logSentEmail(db, {
       lead_key: lead.key,
       email: gate.email,
       subject: gate.subject,
       message_id: messageId,
       status: "sent",
-      at: new Date().toISOString(),
+      at,
+    });
+    void appendSendToJournal({
+      lead_key: lead.key,
+      email: gate.email,
+      subject: gate.subject,
+      message_id: messageId,
+      status: "sent",
+      at,
+      channel: "email",
     });
 
     updateLead(db, lead.key, { stage: "sent", status: "sent" });

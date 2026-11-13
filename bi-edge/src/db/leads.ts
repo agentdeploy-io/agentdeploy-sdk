@@ -7,8 +7,21 @@ import type {
   StageCounts,
 } from "./types.js";
 
+// On re-sync of a known key we MERGE, never reset:
+//  - enrichment (registry data, website, contacts) refreshes from the crawl;
+//  - stage can only ADVANCE (raw→verified→…→replied); terminal/advanced
+//    states (sent, replied, opted_out, rejected, archived) are protected —
+//    a re-crawl can no longer turn a sent lead back into a fresh "raw" lead;
+//  - status, pitch, classification, research, provenance and created_at are
+//    pipeline-owned and are never overwritten by a sync.
+const STAGE_RANK = (col: string) =>
+  `CASE ${col} WHEN 'verified' THEN 2 WHEN 'classified' THEN 3 WHEN 'researched' THEN 4
+     WHEN 'approved' THEN 5 WHEN 'sent' THEN 6 WHEN 'replied' THEN 7 ELSE 1 END`;
+const WS_RANK = (col: string) =>
+  `CASE ${col} WHEN 'candidate' THEN 2 WHEN 'verified' THEN 3 ELSE 1 END`;
+
 const UPSERT_SQL = `
-  INSERT OR REPLACE INTO leads (
+  INSERT INTO leads (
     key, country, name, reg_number, sic, sic_label, incorporated,
     address, city, website, website_status, website_evidence,
     emails, phones, socials, contact_name, contact_role, source, source_url,
@@ -21,6 +34,47 @@ const UPSERT_SQL = `
     @stage, @classification, @research, @pitch_subject, @pitch_body,
     @status, @created_at, @updated_at, @last_sync_at, @manychat_subscriber_id
   )
+  ON CONFLICT(key) DO UPDATE SET
+    country = excluded.country,
+    name = excluded.name,
+    reg_number = COALESCE(excluded.reg_number, leads.reg_number),
+    sic = COALESCE(excluded.sic, leads.sic),
+    sic_label = COALESCE(excluded.sic_label, leads.sic_label),
+    incorporated = COALESCE(excluded.incorporated, leads.incorporated),
+    address = COALESCE(excluded.address, leads.address),
+    city = COALESCE(excluded.city, leads.city),
+    website = COALESCE(excluded.website, leads.website),
+    website_status = CASE
+      WHEN leads.website_status = 'flagged' THEN leads.website_status
+      WHEN ${WS_RANK("excluded.website_status")} > ${WS_RANK("leads.website_status")}
+        THEN excluded.website_status
+      ELSE leads.website_status
+    END,
+    website_evidence = COALESCE(excluded.website_evidence, leads.website_evidence),
+    emails = COALESCE(excluded.emails, leads.emails),
+    phones = COALESCE(excluded.phones, leads.phones),
+    socials = COALESCE(excluded.socials, leads.socials),
+    contact_name = COALESCE(excluded.contact_name, leads.contact_name),
+    contact_role = COALESCE(excluded.contact_role, leads.contact_role),
+    classification = COALESCE(leads.classification, excluded.classification),
+    research = COALESCE(leads.research, excluded.research),
+    pitch_subject = COALESCE(leads.pitch_subject, excluded.pitch_subject),
+    pitch_body = COALESCE(leads.pitch_body, excluded.pitch_body),
+    stage = CASE
+      WHEN leads.stage IN ('sent', 'replied', 'opted_out', 'rejected', 'archived')
+        THEN leads.stage
+      WHEN ${STAGE_RANK("excluded.stage")} > ${STAGE_RANK("leads.stage")}
+        THEN excluded.stage
+      ELSE leads.stage
+    END,
+    status = leads.status,
+    -- (Double-quoted: some SQLite builds reject the unquoted
+    --  excluded.manchat_subscriber_id reference in UPSERT clauses.)
+    manychat_subscriber_id = COALESCE(excluded."manychat_subscriber_id", leads."manychat_subscriber_id"),
+    source = COALESCE(leads.source, excluded.source),
+    source_url = COALESCE(leads.source_url, excluded.source_url),
+    updated_at = excluded.updated_at,
+    last_sync_at = excluded.last_sync_at
 `;
 
 const SELECT_BY_KEY = `SELECT * FROM leads WHERE key = ?`;

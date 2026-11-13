@@ -17,9 +17,12 @@ import {
   getLead,
   setSetting,
   logReply,
+  logSentEmail,
   getReplyLogById,
   listRecentSent,
   countSentToday,
+  threadHeadersForLead,
+  canonicalMessageId,
 } from "../../db/index.js";
 import { handleCommand } from "../../agents/supervisor.js";
 import type { Lead } from "../../db/types.js";
@@ -140,6 +143,103 @@ describe("send-reply (G3)", () => {
     expect(countSentToday(db)).toBe(1);
     expect(getReplyLogById(db, id)?.draft_status).toBe("sent");
     expect(getLead(db, "uk/acme-replies")?.status).toBe("replied");
+  });
+
+  it("threads the reply under the pitch via In-Reply-To + References", async () => {
+    setSetting(db, "dryRun", "false");
+    setSetting(db, "sendEnabled", "true");
+    setSetting(db, "dailyCap", "10");
+    makeSentLead(db);
+    // The original pitch, as recorded when it was sent.
+    logSentEmail(db, {
+      lead_key: "uk/acme-replies",
+      email: "owner@acmedigital.co.uk",
+      subject: "Quick question about your intake process",
+      message_id: "pitch-001@smtp-relay.mailin.fr", // stored without brackets
+      status: "sent",
+      at: new Date().toISOString(),
+    });
+    const id = addPendingDraft(db);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messageId: "reply-002" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await handleCommand("/send-reply", [String(id)], db, ENV);
+    expect(out).toContain("sent");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.brevo.com/v3/smtp/email");
+    const body = JSON.parse(String(init.body));
+    // Both headers carry the pitch message-id, bracketed per RFC 5322.
+    expect(body.headers["In-Reply-To"]).toBe("<pitch-001@smtp-relay.mailin.fr>");
+    expect(body.headers["References"]).toBe("<pitch-001@smtp-relay.mailin.fr>");
+  });
+
+  it("chains the full thread on a second reply (In-Reply-To = last, References = all)", async () => {
+    setSetting(db, "dryRun", "false");
+    setSetting(db, "sendEnabled", "true");
+    setSetting(db, "dailyCap", "10");
+    makeSentLead(db);
+    logSentEmail(db, {
+      lead_key: "uk/acme-replies", email: "owner@acmedigital.co.uk",
+      subject: "Quick question about your intake process",
+      message_id: "<pitch-001@x>", status: "sent", at: "2026-11-01T00:00:00Z",
+    });
+    logSentEmail(db, {
+      lead_key: "uk/acme-replies", email: "owner@acmedigital.co.uk",
+      subject: "Re: Quick question about your intake process",
+      message_id: "<reply-002@x>", status: "sent", at: "2026-11-02T00:00:00Z",
+    });
+    const id = addPendingDraft(db);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messageId: "reply-003" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await handleCommand("/send-reply", [String(id)], db, ENV);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    // Reply to the most recent message we sent; References carries the whole chain.
+    expect(body.headers["In-Reply-To"]).toBe("<reply-002@x>");
+    expect(body.headers["References"]).toBe("<pitch-001@x> <reply-002@x>");
+  });
+
+  it("starts a new thread (no headers) when the lead has no real sends", async () => {
+    setSetting(db, "dryRun", "false");
+    setSetting(db, "sendEnabled", "true");
+    makeSentLead(db); // no sent_log rows
+    const id = addPendingDraft(db);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messageId: "m1" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await handleCommand("/send-reply", [String(id)], db, ENV);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.headers).toBeUndefined();
+  });
+
+  describe("threadHeadersForLead (unit)", () => {
+    it("returns {} with no sends", () => {
+      expect(threadHeadersForLead(db, "uk/none")).toEqual({});
+    });
+
+    it("ignores dry-run and failed rows (no message_id / not status=sent)", () => {
+      const now = new Date().toISOString();
+      logSentEmail(db, { lead_key: "uk/x", email: "x@x.com", subject: "s", message_id: null, status: "dry-run", at: now });
+      logSentEmail(db, { lead_key: "uk/x", email: "x@x.com", subject: "s", message_id: null, status: "failed:boom", at: now });
+      expect(threadHeadersForLead(db, "uk/x")).toEqual({});
+    });
+
+    it("canonicalises message-ids to a single bracket pair", () => {
+      expect(canonicalMessageId("<a@b>")).toBe("<a@b>");
+      expect(canonicalMessageId("a@b")).toBe("<a@b>");
+      expect(canonicalMessageId("  a@b  ")).toBe("<a@b>");
+    });
   });
 
   it("strips existing Re: prefix from the reply subject", async () => {

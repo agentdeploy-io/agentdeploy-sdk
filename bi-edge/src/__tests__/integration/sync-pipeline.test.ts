@@ -237,7 +237,7 @@ describe("sync-pipeline integration", () => {
     expect(lead?.last_sync_at).toBeTruthy();
   });
 
-  it("replaces entire row on re-sync (INSERT OR REPLACE semantics)", async () => {
+  it("merges on re-sync: enrichment refreshes, nulls don't wipe existing contacts", async () => {
     const fullLead = makeSyncLead({
       key: "uk/700",
       name: "Full Lead",
@@ -258,8 +258,41 @@ describe("sync-pipeline integration", () => {
 
     const lead = getLead(db, "uk/700");
     expect(lead?.name).toBe("Updated Name");
-    expect(lead?.stage).toBe("classified");
-    expect(lead?.emails).toBeNull();
-    expect(lead?.phones).toBeNull();
+    expect(lead?.stage).toBe("classified"); // stage may ADVANCE on re-sync
+    // Previously-known contacts survive a partial re-sync (no data loss).
+    expect(lead?.emails).toBe(fullLead.emails);
+    expect(lead?.phones).toBe(fullLead.phones);
+  });
+
+  it("never downgrades an advanced or terminal lead on re-sync (double-send safety)", async () => {
+    const sentLead = makeSyncLead({
+      key: "uk/800",
+      stage: "sent",
+      status: "sent",
+      pitch_subject: "Original pitch",
+      pitch_body: "Original body",
+      website_status: "flagged",
+      emails: JSON.stringify([{ addr: "owner@sent.co.uk", kind: "role" }]),
+    });
+
+    await postSyncBatch(db, [sentLead]);
+    // Simulate the pipeline having moved it forward and the user marking it.
+    db.prepare("UPDATE leads SET stage = 'replied', status = 'replied' WHERE key = ?").run("uk/800");
+
+    // A later crawl re-harvests the same domain and hands it back as raw.
+    const recrawl = makeSyncLead({
+      key: "uk/800",
+      stage: "raw",
+      status: "pending_review",
+      website_status: "none",
+    });
+    await postSyncBatch(db, [recrawl]);
+
+    const lead = getLead(db, "uk/800");
+    expect(lead?.stage).toBe("replied"); // NOT reset to raw
+    expect(lead?.status).toBe("replied"); // NOT reset to pending_review
+    expect(lead?.pitch_subject).toBe("Original pitch"); // pitch preserved
+    expect(lead?.website_status).toBe("flagged"); // review flag preserved
+    expect(lead?.emails).toBe(sentLead.emails); // contacts preserved
   });
 });

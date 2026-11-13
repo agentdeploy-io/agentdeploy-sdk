@@ -3,6 +3,7 @@
 import { createAgent } from "@agentdeploy-io/edge-sdk";
 import type { AgentDeployAgent } from "@agentdeploy-io/edge-sdk";
 import Database from "better-sqlite3";
+import { appendSendToJournal } from "../db/send-journal.js";
 import { sendDmReplyDraft } from "./dm-reply.js";
 import {
   listLeads,
@@ -17,6 +18,7 @@ import {
   isBlacklisted,
   logSentEmail,
   listRecentSent,
+  threadHeadersForLead,
   getRepliesByLead,
   listRecentReplies,
   getPendingDrafts,
@@ -145,8 +147,12 @@ export async function sendReplyDraft(
   }
 
   try {
-    const { messageId } = await sendViaBrevo(to, lead.name, subject, html, env);
+    // Keep the reply in the same thread as the pitch (RFC 5322 In-Reply-To
+    // + References from the lead's sent chain).
+    const headers = threadHeadersForLead(db, lead.key);
+    const { messageId } = await sendViaBrevo(to, lead.name, subject, html, env, { headers });
     logSentEmail(db, { lead_key: lead.key, email: to, subject, message_id: messageId, status: "sent", at });
+    void appendSendToJournal({ lead_key: lead.key, email: to, subject, message_id: messageId, status: "sent", at, channel: "email" });
     updateReplyDraft(db, id, entry.draft, "sent");
     updateLead(db, lead.key, { stage: "replied", status: "replied" });
     return `Reply ${id} sent → ${to} (subject: ${subject}, message ${messageId || "queued"})`;
