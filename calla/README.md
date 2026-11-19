@@ -316,6 +316,53 @@ unregistered apps are removed **2027-01-12**, full shutdown March 2027.
 Register the app at developers.reddit.com/app-registration. Without
 `REDDIT_USERNAME`/`REDDIT_PASSWORD` the sidecar is read-only.
 
+## Buyer setup (delivered with the template)
+
+### 1. Email sending — Brevo (free tier is enough to start)
+
+The agent sends all outbound email through [Brevo](https://www.brevo.com).
+The **free plan includes 300 emails/day** — more than the engine's default
+daily cap of 10 — so no card is required to start.
+
+1. Create a Brevo account (free plan).
+2. **Authenticate your sending domain** (e.g. `gradient3.io`):
+   *Brevo → Email → Senders → Domains → Add domain* — copy the SPF + DKIM
+   TXT records into your domain's DNS (Cloudflare: *DNS → Records*, type TXT).
+   Verification takes minutes to hours.
+3. **Verify a sender address** on that domain (e.g. `agent.miles@yourdomain.com`):
+   *Brevo → Email → Senders → Add sender*. This address is the public
+   identity the agent emails from — it must receive the confirmation email.
+4. **Create an API key**: *Brevo → Account & Settings → API Keys → Create*
+   (scopes: *Email — Send/Manage*, *Email — Read*).
+5. Enter in your deployment:
+   - Marketplace: Dashboard → your deployment → **Secrets** panel
+     (`BREVO_API_KEY`, `BREVO_SENDER_EMAIL`).
+   - Self-hosted: `bi-edge/.dev.vars` (or `wrangler secret put`).
+
+Deliverability notes: keep the default 10-sends/day cap until bounce rates
+stay < 2%; warm the address with low volume for the first days; the engine
+adds `List-Unsubscribe` + the AI-disclosure line automatically.
+
+### 2. Reply capture — your inbox relay
+
+Replies come back to the sender address. The engine's poller reads a mailbox
+you control over standard IMAP (no desktop apps, runs server-side):
+
+**Gmail (simplest):** create a dedicated Gmail address (e.g.
+`agent.replies@gmail.com`), enable 2-Step Verification, generate an
+*app password* (My Account → Security → App passwords), and forward replies
+to it (Proton: *Settings → Forward and auto-reply*; or point your domain's
+MX there). Enter `INBOX_IMAP_HOST=imap.gmail.com`,
+`INBOX_IMAP_PORT=993`, `INBOX_IMAP_USER`, `INBOX_IMAP_PASSWORD` (the app
+password) in your deployment secrets. Any IMAP provider works — the poller
+is protocol-agnostic.
+
+### 3. Turn it on
+
+The deployment starts in **dry-run** (pipeline runs, no real email). In the
+console: review leads in Data Studio → flip *Sending* off dry-run →
+approve the first sends from the Approval Inbox. Everything is reversible.
+
 ## Production mail routing (reply capture without Proton Mail Bridge)
 
 The lead-gen loop's public identity is `agent.miles@gradient3.io` (hosted on
