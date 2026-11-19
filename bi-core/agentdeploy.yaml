@@ -44,8 +44,10 @@ components:
   core:
     kind: core-runtime
     name: bi-core
-    runtime: "mastra:1.x"
-    image: "registry.fly.io/agentdeploy/mastra-core:1.x"
+    runtime: "bi-core:1.x"
+    # Public GHCR package, anonymously pullable by the platform at provision
+    # time. Built + conformance-smoke-tested by .github/workflows/release-bi-core-image.yml.
+    image: "ghcr.io/agentdeploy-io/bi-core:1.0.0"
     source: packages/bi-core
     taskTypes:
       - crawl

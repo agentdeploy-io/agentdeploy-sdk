@@ -2,8 +2,9 @@ app = "calla-bi-core"
 primary_region = "iad"
 
 [build]
-  dockerfile = "Dockerfile"
-  context = "."
+  # Context is the packages/ root — the Dockerfile needs ../core-sdk/tsconfig.json.
+  dockerfile = "bi-core/Dockerfile"
+  context = ".."
 
 [env]
   PORT = "4111"

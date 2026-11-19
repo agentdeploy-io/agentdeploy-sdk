@@ -1,0 +1,13 @@
+# Context is packages/ (bi-core's Dockerfile needs ../core-sdk/tsconfig.json).
+# Keep the build context small and secret-free (audited: violations block listing).
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+**/.dev.vars
+**/*.sqlite
+**/*.db
+**/*.log
+**/.DS_Store
+**/.git
