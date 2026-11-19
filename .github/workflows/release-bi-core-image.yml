@@ -56,12 +56,40 @@ jobs:
       - name: Ensure public package visibility (platform pulls anonymously)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
+          # Best-effort flip (GITHUB_TOKEN may lack package scopes on the org).
+          set +e
           PKG_ID=$(gh api "orgs/agentdeploy-io/packages?package_type=container" \
-            --jq '.packages[] | select(.name=="bi-core") | .id')
-          gh api --method PATCH "orgs/agentdeploy-io/packages/containers/${PKG_ID}" \
-            -f visibility=public
-          echo "package is public"
+            --jq '.packages[] | select(.name=="bi-core") | .id' 2>/dev/null)
+          ENDPOINT="orgs/agentdeploy-io"
+          if [ -z "$PKG_ID" ]; then
+            PKG_ID=$(gh api "user/packages?package_type=container" \
+              --jq '.packages[] | select(.name=="bi-core") | .id' 2>/dev/null)
+            ENDPOINT="user"
+          fi
+          if [ -n "$PKG_ID" ]; then
+            if gh api --method PATCH "${ENDPOINT}/packages/containers/${PKG_ID}" -f visibility=public >/dev/null 2>&1; then
+              echo "package set public via API"
+            else
+              echo "::warning::could not set visibility via API — flip it manually: github.com/agentdeploy-io/packages → bi-core → Settings → Public"
+            fi
+          else
+            echo "::warning::cannot list packages with GITHUB_TOKEN — set Public manually: github.com/agentdeploy-io/packages → bi-core → Settings → Public"
+          fi
+          set -e
+          # Hard gate: the platform pulls anonymously — fail the release if that
+          # does not work, so a private package can never reach a buyer.
+          TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:agentdeploy-io/bi-core:pull" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/agentdeploy-io/bi-core/manifests/${IMAGE_TAG}")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::anonymous pull of bi-core:${IMAGE_TAG} returned ${CODE} — package must be public (github.com/agentdeploy-io/packages → bi-core → Settings → Public)"
+            exit 1
+          fi
+          echo "anonymous pull verified"
 
       - name: Smoke-test the pushed image (Supervisor Protocol v1)
         run: |
