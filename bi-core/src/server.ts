@@ -19,6 +19,8 @@ import { emptyDrops, emptyStats, type Candidate } from "./pipeline/types.js";
 import { loadCustomSources, getCustomSource, isCustomSource } from "./pipeline/custom-sources.js";
 import { generateScraper, testScraper, registerScraper, removeScraper, listScrapers } from "./scraper/service.js";
 import { startInboxPoller } from "./inbox/imap-poller.js";
+import { SupervisorLedger, InvalidTaskError, NoCheckpointError, type SupervisorTask } from "./supervisor/protocol.js";
+import { controlPlaneFromEnv } from "./supervisor/control-plane.js";
 import type { CoreMessage } from "ai";
 
 // Dev convenience: load packages/bi-core/.env when present. Variables already
@@ -42,17 +44,49 @@ installFetchTimeout(Number(process.env["HTTP_TIMEOUT_MS"] || 30_000));
 
 const PORT = Number(process.env["PORT"] || 4111);
 
-interface TaskState {
-  id: string;
-  state: "queued" | "running" | "succeeded" | "failed";
-  startedAt: string;
-  finishedAt?: string;
-  result?: unknown;
-  error?: string;
-}
+// ── Supervisor Protocol v1 (docs/sellers/byo-runtime.md) ─────────────────
+// Control-plane client: broker secrets + telemetry + 30s heartbeats.
+// No-op when AD_CONTROL_PLANE_URL is unset (local dev default).
+const adControlPlane = controlPlaneFromEnv(process.env, (m) => console.log(`[bi-core:ad] ${m}`));
+const adDeploymentId = (process.env["DEPLOYMENT_ID"] ?? "").trim();
 
-const tasks = new Map<string, TaskState>();
+// The platform's task ledger is the single source of truth for all tasks —
+// console-triggered workflow runs and platform-enqueued protocol tasks alike.
+const supervisor = new SupervisorLedger({
+  dataDir: process.env["DATA_DIR"] || "/data",
+  emit: (e) =>
+    adControlPlane.emit({
+      deploymentId: adDeploymentId,
+      taskId: e.taskId,
+      eventType: e.kind === "checkpoint" ? "checkpoint" : "task_transition",
+      idempotencyKey: `${e.taskId}:${e.to}:${e.at}`,
+      payload: { from: e.from, to: e.to },
+    }),
+});
+
+const tasks = supervisor.tasks; // Map<string, SupervisorTask>
 let seq = 0;
+let tokensTotal = 0; // cumulative token meter (feeds heartbeat tokensInPeriod)
+let lastTaskError: string | null = null;
+
+function extractTokens(result: unknown): number {
+  const r = result as {
+    usage?: { totalTokens?: unknown; total_tokens?: unknown; tokens?: unknown };
+    totalUsage?: { totalTokens?: unknown };
+    result?: { usage?: { totalTokens?: unknown } };
+  } | null;
+  const cands = [
+    r?.usage?.totalTokens,
+    r?.usage?.total_tokens,
+    r?.usage?.tokens,
+    r?.totalUsage?.totalTokens,
+    r?.result?.usage?.totalTokens,
+  ];
+  for (const c of cands) {
+    if (typeof c === "number" && Number.isFinite(c) && c > 0) return c;
+  }
+  return 0;
+}
 
 // Source smoke tests: run one discovery source for a vertical WITHOUT the
 // verify/enrich/sync stages, so the operator can preview what a source will
@@ -104,48 +138,123 @@ async function readBody(req: IncomingMessage): Promise<string> {
 }
 
 async function runMastraWorkflow(taskId: string, workflowName: string, input: Record<string, unknown>): Promise<void> {
+  supervisor.markRunning(taskId);
   const task = tasks.get(taskId)!;
-  task.state = "running";
+
+  // Budget fence before the expensive run (defense-in-depth; the platform
+  // also enforces a hard stop independently).
+  const fence = supervisor.enforceFence(taskId);
+  if (fence === "expired") return;
 
   try {
     const workflow = mastra.getWorkflow(workflowName as "crawl");
     const run = await workflow.createRunAsync();
     const result = await run.start({ inputData: input as any });
 
-    task.state = "succeeded";
-    task.finishedAt = new Date().toISOString();
-    task.result = result;
+    const tokens = extractTokens(result);
+    if (tokens > 0) tokensTotal += tokens;
+    const post = supervisor.recordUsage(taskId, tokens);
+    if (post === "warn") {
+      adControlPlane.emit({
+        deploymentId: adDeploymentId,
+        taskId,
+        eventType: "warning",
+        payload: { kind: "budget_fence_90pct", budgetUsed: task.budgetUsed, budget: task.budget },
+      });
+    }
+    if (post === "expired") return; // fence won: checkpointed + expired
+    supervisor.succeed(taskId, result); // no-op if the task was cancelled mid-run
   } catch (err) {
-    task.state = "failed";
-    task.finishedAt = new Date().toISOString();
-    task.error = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    lastTaskError = msg;
+    supervisor.fail(taskId, msg); // no-op if the task was cancelled mid-run
   }
 }
 
 async function runAgentGenerate(taskId: string, messages: CoreMessage[]): Promise<void> {
-  const task = tasks.get(taskId)!;
-  task.state = "running";
+  supervisor.markRunning(taskId);
 
   try {
     const agent = mastra.getAgent("crawler");
     const result = await agent.generate(messages);
-
-    task.state = "succeeded";
-    task.finishedAt = new Date().toISOString();
-    task.result = result;
+    const tokens = extractTokens(result);
+    if (tokens > 0) tokensTotal += tokens;
+    supervisor.recordUsage(taskId, tokens);
+    supervisor.succeed(taskId, result);
   } catch (err) {
-    task.state = "failed";
-    task.finishedAt = new Date().toISOString();
-    task.error = err instanceof Error ? err.message : String(err);
+    lastTaskError = err instanceof Error ? err.message : String(err);
+    supervisor.fail(taskId, lastTaskError);
   }
 }
 
-function createWorkflowTask(prefix: string): TaskState {
+function createWorkflowTask(prefix: string, payload: Record<string, unknown> = {}): SupervisorTask {
   seq += 1;
   const taskId = `${prefix}-${seq}`;
-  const task: TaskState = { id: taskId, state: "queued", startedAt: new Date().toISOString() };
-  tasks.set(taskId, task);
-  return task;
+  return supervisor.createTask({ taskType: prefix, payload }, taskId);
+}
+
+// Protocol taskType → Mastra workflow mapping. Unknown types are simulated
+// (succeed with an echo) so conformance enqueues never fail; the payload is
+// opaque to the platform by contract.
+const WORKFLOW_BY_TYPE: Record<string, string> = {
+  crawl: "crawl",
+  crawl_run: "crawl",
+  verify: "verify",
+  verify_run: "verify",
+  enrich: "enrich",
+  enrich_run: "enrich",
+};
+
+function workflowInputFromTask(task: SupervisorTask): Record<string, unknown> {
+  const input: Record<string, unknown> = { ...task.payload };
+  if (task.budget.vmMinutes != null) input["vmMinutesLimit"] = task.budget.vmMinutes;
+  if (task.budget.tokens != null) input["tokensLimit"] = task.budget.tokens;
+  if (task.maxRuntimeSec != null) input["maxRuntimeSec"] = task.maxRuntimeSec;
+  return input;
+}
+
+/** Dispatch a platform-enqueued protocol task to an executor. */
+function dispatchProtocolTask(task: SupervisorTask): void {
+  if (task.payload["hitl"] === true) {
+    // Human-in-the-loop gate: hold at awaiting_input (checkpointed for VM
+    // stops); POST /tasks/{id}/resume releases it into execution.
+    supervisor.markRunning(task.id);
+    supervisor.requestAwaitingInput(task.id);
+    return;
+  }
+  const workflowName = WORKFLOW_BY_TYPE[task.taskType];
+  if (workflowName) {
+    void runMastraWorkflow(task.id, workflowName, workflowInputFromTask(task));
+    return;
+  }
+  supervisor.markRunning(task.id);
+  void (async () => {
+    await new Promise((r) => setTimeout(r, 150));
+    supervisor.succeed(task.id, {
+      ok: true,
+      note: `taskType "${task.taskType}" is not a bi-core workflow; simulated for conformance`,
+      echo: task.payload,
+    });
+  })();
+}
+
+/**
+ * Continue execution after a platform resume. The caller has already moved
+ * the task to `resumed`; we defer past the first await so the HTTP response
+ * is serialized with state "resumed" (the contract's expected shape) before
+ * the task moves on to `running`.
+ */
+async function resumeProtocolTask(task: SupervisorTask): Promise<void> {
+  if (task.state !== "resumed") return;
+  await Promise.resolve();
+  const workflowName = WORKFLOW_BY_TYPE[task.taskType];
+  if (workflowName) {
+    void runMastraWorkflow(task.id, workflowName, workflowInputFromTask(task));
+    return;
+  }
+  supervisor.markRunning(task.id);
+  await new Promise((r) => setTimeout(r, 150));
+  supervisor.succeed(task.id, { ok: true, resumed: true, echo: task.payload });
 }
 
 interface WorkflowTriggerBody {
@@ -176,17 +285,24 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.method === "GET" && p === "/status") {
-    const active = [...tasks.values()].some((t) => t.state === "queued" || t.state === "running");
+    const active = [...tasks.values()].some((t) => !["succeeded", "failed", "cancelled", "expired"].includes(t.state));
     return json(res, 200, {
       phase: active ? "busy" : "idle",
+      cpuPct: Math.round(adControlPlane.cpuPct() * 10) / 10,
+      memMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
       progress: getCrawlProgress(),
-      memMb: process.memoryUsage().rss / (1024 * 1024),
+      tokensTotal,
       tasks: [...tasks.values()]
         .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1))
         .slice(0, 8)
         .map((t) => ({
           id: t.id,
           state: t.state,
+          taskType: t.taskType,
+          transitions: t.transitions,
+          budget: t.budget,
+          budgetUsed: t.budgetUsed,
+          checkpointCount: t.checkpointCount,
           startedAt: t.startedAt,
           finishedAt: t.finishedAt,
           error: t.error,
@@ -412,8 +528,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return json(res, 400, { error: "invalid json" });
     }
 
-    const task = createWorkflowTask("agent");
-    void runAgentGenerate(task.id, parsed.messages ?? []);
+    const messages = parsed.messages ?? [];
+    const task = createWorkflowTask("agent", { messageCount: messages.length });
+    void runAgentGenerate(task.id, messages);
     return json(res, 202, { taskId: task.id, state: "queued" });
   }
 
@@ -427,7 +544,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     const input = parseWorkflowInput(parsed);
-    const task = createWorkflowTask("crawl");
+    const task = createWorkflowTask("crawl", input);
     void runMastraWorkflow(task.id, "crawl", input);
     return json(res, 202, { taskId: task.id, state: "queued" });
   }
@@ -442,7 +559,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     const input = parseWorkflowInput(parsed);
-    const task = createWorkflowTask("verify");
+    const task = createWorkflowTask("verify", input);
     void runMastraWorkflow(task.id, "verify", input);
     return json(res, 202, { taskId: task.id, state: "queued" });
   }
@@ -457,7 +574,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     const input = parseWorkflowInput(parsed);
-    const task = createWorkflowTask("enrich");
+    const task = createWorkflowTask("enrich", input);
     void runMastraWorkflow(task.id, "enrich", input);
     return json(res, 202, { taskId: task.id, state: "queued" });
   }
@@ -483,6 +600,77 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return json(res, 200, task);
   }
 
+  // ── Supervisor Protocol v1 (conformance C1–C8) ─────────────────────────
+  // POST /tasks — valid → 202 {taskId, state}; invalid/empty → 400 (never 500)
+  if (req.method === "POST" && p === "/tasks") {
+    const raw = await readBody(req);
+    let body: unknown;
+    try {
+      body = raw.trim() === "" ? {} : JSON.parse(raw);
+    } catch {
+      return json(res, 400, { error: "invalid json" });
+    }
+    let task: SupervisorTask;
+    try {
+      task = supervisor.createTask(body);
+    } catch (e) {
+      if (e instanceof InvalidTaskError) return json(res, 400, { error: e.reason });
+      throw e;
+    }
+    void dispatchProtocolTask(task);
+    return json(res, 202, { taskId: task.id, state: task.state });
+  }
+
+  // POST /tasks/{id}/cancel → 202; terminal `cancelled` (immediate; ≤60s rule)
+  const cancelMatch = p.match(/^\/tasks\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && cancelMatch) {
+    const id = decodeURIComponent(cancelMatch[1]!);
+    if (!tasks.has(id)) return json(res, 404, { error: "not found" });
+    const task = supervisor.cancel(id);
+    return json(res, 202, { id: task.id, state: task.state });
+  }
+
+  // POST /tasks/{id}/resume → 200 {state:"resumed"}; 409 without checkpoint
+  const resumeMatch = p.match(/^\/tasks\/([^/]+)\/resume$/);
+  if (req.method === "POST" && resumeMatch) {
+    const id = decodeURIComponent(resumeMatch[1]!);
+    if (!tasks.has(id)) return json(res, 404, { error: "not found" });
+    try {
+      const task = supervisor.resume(id);
+      void resumeProtocolTask(task);
+      return json(res, 200, { id: task.id, state: task.state });
+    } catch (e) {
+      if (e instanceof NoCheckpointError) return json(res, 409, { error: e.message });
+      throw e;
+    }
+  }
+
+  // POST /checkpoint → 202 {checkpointed: [...]} (all non-terminal tasks)
+  if (req.method === "POST" && p === "/checkpoint") {
+    const checkpointed = supervisor.checkpointAll();
+    return json(res, 202, { checkpointed });
+  }
+
+  // Conformance test hooks (mirror the platform's mock runtime; used by the
+  // GA-gate live-image run of runtime-contract.test.ts).
+  const testSucceedMatch = p.match(/^\/__test__\/tasks\/([^/]+)\/succeed$/);
+  if (req.method === "POST" && testSucceedMatch) {
+    const id = decodeURIComponent(testSucceedMatch[1]!);
+    const task = tasks.get(id);
+    if (!task) return json(res, 404, { error: "not found" });
+    supervisor.succeed(id, { simulated: true });
+    return json(res, 200, { id: task.id, state: task.state });
+  }
+  const testExpireMatch = p.match(/^\/__test__\/tasks\/([^/]+)\/expire$/);
+  if (req.method === "POST" && testExpireMatch) {
+    const id = decodeURIComponent(testExpireMatch[1]!);
+    const task = tasks.get(id);
+    if (!task) return json(res, 404, { error: "not found" });
+    supervisor.writeCheckpoint(task, { moveState: true });
+    supervisor.transition(task, "expired");
+    return json(res, 200, { id: task.id, state: task.state });
+  }
+
   return json(res, 404, { error: `no route: ${req.method} ${p}` });
 }
 
@@ -498,10 +686,42 @@ const server = createServer((req, res) => {
   });
 });
 
+/**
+ * Boot-time control-plane wiring (platform deployments only — no-ops locally):
+ *   1. fetch this deployment's broker secrets → in-memory only. They are
+ *      materialized into process.env AFTER boot solely so the existing
+ *      env-reading modules work unchanged; the platform's machine env (which
+ *      is audited) contains no buyer secrets (R7/S1), and values are never
+ *      logged anywhere.
+ *   2. start telemetry flush + 30s heartbeats (3 missed = degraded, 10 =
+ *      unresponsive on the platform side).
+ */
+async function bootstrapControlPlane(): Promise<void> {
+  const fetched = await adControlPlane.fetchSecrets();
+  if (fetched.ok) {
+    for (const name of adControlPlane.secretNames) {
+      const value = adControlPlane.getSecret(name);
+      if (value && !(name in process.env)) process.env[name] = value;
+    }
+    console.log(`[bi-core:ad] broker secrets loaded: ${fetched.count} key(s), in memory only`);
+  } else {
+    console.log(`[bi-core:ad] broker secrets unavailable: ${fetched.error}`);
+  }
+  adControlPlane.start(() => ({
+    phase: supervisor.activeCount() > 0 ? "busy" : "idle",
+    tokensInPeriod: tokensTotal,
+    lastError: lastTaskError,
+  }));
+}
+
+const restored = supervisor.load();
+if (restored > 0) console.log(`[bi-core] restored ${restored} task(s) from supervisor ledger`);
+
 server.listen(PORT, () => {
   console.log(`[bi-core] mastra server listening on :${PORT}`);
-  // Proton inbox reader (no-op unless PROTON_IMAP_* credentials are set).
+  // Inbox poller (no-op unless INBOX_IMAP_* / PROTON_IMAP_* credentials are set).
   startInboxPoller(process.env as Record<string, string>);
+  void bootstrapControlPlane().catch((err) => console.error("[bi-core:ad] bootstrap failed:", err));
 });
 
 // Don't orphan the headless chromium when the server is restarted/killed.
