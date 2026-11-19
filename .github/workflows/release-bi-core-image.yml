@@ -53,6 +53,16 @@ jobs:
           cache-from: type=gha,scope=bi-core
           cache-to: type=gha,scope=bi-core,mode=max
 
+      - name: Ensure public package visibility (platform pulls anonymously)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PKG_ID=$(gh api "orgs/agentdeploy-io/packages?package_type=container" \
+            --jq '.packages[] | select(.name=="bi-core") | .id')
+          gh api --method PATCH "orgs/agentdeploy-io/packages/containers/${PKG_ID}" \
+            -f visibility=public
+          echo "package is public"
+
       - name: Smoke-test the pushed image (Supervisor Protocol v1)
         run: |
           docker pull ${{ steps.meta.outputs.image }}
