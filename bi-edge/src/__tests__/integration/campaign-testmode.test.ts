@@ -283,6 +283,39 @@ function mockLlmAndBrevo(leadKey: string, replyFrom: string, replyBody: string, 
   });
 }
 
+describe("inbound webhook shared-secret gate", () => {
+  function post(env: Record<string, unknown>, headers: Record<string, string> = {}) {
+    return handleInboundWebhook(
+      new Request("http://x/inbound-webhook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ items: [] }),
+      }),
+      env as any,
+    );
+  }
+
+  it("is open when INBOUND_WEBHOOK_SECRET is unset (local dev)", async () => {
+    const res = await post(ENV);
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects with 401 when the secret is set and missing", async () => {
+    const res = await post({ ...ENV, INBOUND_WEBHOOK_SECRET: "s3cret" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects with 401 on a wrong secret", async () => {
+    const res = await post({ ...ENV, INBOUND_WEBHOOK_SECRET: "s3cret" }, { "X-AD-Webhook": "wrong" });
+    expect(res.status).toBe(401);
+  });
+
+  it("accepts X-AD-Webhook and Bearer presentation", async () => {
+    expect((await post({ ...ENV, INBOUND_WEBHOOK_SECRET: "s3cret" }, { "X-AD-Webhook": "s3cret" })).status).toBe(200);
+    expect((await post({ ...ENV, INBOUND_WEBHOOK_SECRET: "s3cret" }, { Authorization: "Bearer s3cret" })).status).toBe(200);
+  });
+});
+
 describe("worker POST /cmd/simulate-reply (real email in test mode)", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();

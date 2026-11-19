@@ -316,6 +316,84 @@ unregistered apps are removed **2027-01-12**, full shutdown March 2027.
 Register the app at developers.reddit.com/app-registration. Without
 `REDDIT_USERNAME`/`REDDIT_PASSWORD` the sidecar is read-only.
 
+## Production mail routing (reply capture without Proton Mail Bridge)
+
+The lead-gen loop's public identity is `agent.miles@gradient3.io` (hosted on
+Proton). **Brevo sends all outbound mail** (SPF/DKIM on the domain, sender
+already warm). Replies come back into the Proton mailbox — and that is the one
+piece that cannot run headless: the old poller read the mailbox through
+**Proton Mail Bridge**, a desktop app on the operator's Mac.
+
+Production design: **Proton auto-forwards replies to a dedicated free Gmail
+inbox**, which bi-core's poller reads over standard IMAP/TLS from Fly. No
+Bridge, no Mac, no headless Electron VM.
+
+```
+Brevo ──pitches──► prospect        (From: agent.miles@gradient3.io)
+prospect ──reply──► Proton (agent.miles@gradient3.io)
+Proton ──auto-forward rule──► free Gmail relay (e.g. miles.agent.replies@gmail.com)
+bi-core (Fly) ──IMAP :993 TLS──► Gmail, dedupes by Message-ID
+bi-core ──POST /inbound-webhook (X-AD-Webhook)──► bi-edge (Cloudflare)
+bi-edge: pre-match → classify → draft → booking → .ics invite (Brevo)
+```
+
+One-time setup:
+
+1. Create the dedicated Gmail account; enable 2-Step Verification and generate
+   an **app password**.
+2. Proton → Settings → All settings → **Forward and auto-reply** → forward
+   `agent.miles@gradient3.io` → the Gmail address (requires a paid Proton
+   plan). Confirm the forwarding link in the Gmail inbox.
+3. (Optional) Gmail filter on forwarded mail → label `AI_AGENT_REPLIES`.
+4. `packages/bi-core/.env`:
+
+   ```
+   INBOX_IMAP_HOST=imap.gmail.com
+   INBOX_IMAP_PORT=993
+   INBOX_IMAP_USER=<relay@gmail.com>
+   INBOX_IMAP_PASSWORD=<app password>
+   INBOX_IMAP_FOLDER=INBOX            # or Label_AI_AGENT_REPLIES
+   EDGE_WEBHOOK_URL=https://<bi-edge>.workers.dev/inbound-webhook
+   INBOX_WEBHOOK_SECRET=<same value as the worker's INBOUND_WEBHOOK_SECRET>
+   ```
+
+Notes:
+
+- The poller (`bi-core/src/inbox/imap-poller.ts`) is provider-agnostic
+  imapflow. Gmail is the primary target; the legacy local Proton Mail Bridge
+  path still works via `PROTON_*` / `INBOX_TLS_INSECURE=true` for dev
+  rollback (see the commented block in `.env`).
+- Forwarded mail keeps the original `From`/`Subject`/`Message-ID`, so the
+  engine's deterministic pre-match (address or threaded subject) is
+  unaffected. Gmail spam is surfaced via `X-GM-Labels` → `SpamScore`.
+- **Webhook is gated in production**: with `INBOUND_WEBHOOK_SECRET` set on the
+  worker, `POST /inbound-webhook` requires `X-AD-Webhook: <secret>` (or
+  `Bearer`). Unset = open, which is only correct on localhost.
+- Gmail confirms *receipt in the relay inbox*, not delivery of the outbound
+  Brevo pitch. Delivery evidence still comes from Brevo (its
+  delivery-status endpoints are unavailable on the current plan — no bounce
+  = best available signal).
+
+## Production deployment runbook
+
+| Service | Target | How | Secrets / env |
+|---|---|---|---|
+| bi-edge (engine) | Cloudflare Workers | `wrangler deploy` from `packages/bi-edge` (`wrangler.toml`: DO `BiEdgeAgent` + `Supervisor`, DO SQLite) | `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BRAND_*`, `AD_GATEWAY_BASE_URL`/`AD_GATEWAY_API_KEY`, `CORE_URL` (Fly bi-core public URL), `INBOUND_WEBHOOK_SECRET`, `CALENDLY_URL` |
+| calla-edge (HITL hub) | Cloudflare Workers | `npm run deploy -w @calla/edge` | `CALLA_JWT_SECRET` (shared with brain) |
+| calla-brain (Mastra) | Fly.io | `fly launch && fly deploy` from `apps/brain` (Dockerfile + fly.toml present) | `CALLA_JWT_SECRET`, `ANTHROPIC_API_KEY`/LLM gateway, `CALLA_EDGE_URL`, `DATABASE_URL` (optional) |
+| bi-core (crawler + reply poller) | Fly.io | `fly launch && fly deploy` from `packages/bi-core` (Dockerfile + fly.toml present; persistent volume at `/data`) | `INBOX_IMAP_*` (Gmail relay), `EDGE_WEBHOOK_URL`, `INBOX_WEBHOOK_SECRET`, `DATA_DIR=/data`, Brave/LLM keys |
+| UI | Cloudflare Pages | `apps/ui/scripts/deploy.mjs` (or `npm run deploy -w @calla/ui`) | `VITE_AUTH_MODE=standalone`, `AGENT_BACKEND_URL` (calla-edge), `BRAIN_URL` (Fly) |
+
+Order: 1) `wrangler login` (interactive — the stored API token lacks Workers
+permission), 2) bi-edge + calla-edge to Cloudflare, 3) brain + bi-core to
+Fly, 4) UI to Pages, 5) set the mail-relay secrets above, 6) verify with a
+`/test-send` + a real reply through the relay.
+
+Logins: the UI runs **standalone auth** — first visitor on the login page
+creates the admin account (brain `POST /brain/auth/register`, open only while
+zero users exist); all subsequent access is JWT (`CALLA_JWT_SECRET` shared by
+brain + calla-edge).
+
 ## Verification
 
 ```bash

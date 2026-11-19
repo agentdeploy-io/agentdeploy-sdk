@@ -190,6 +190,23 @@ export async function handleInboundWebhook(
     });
   }
 
+  // Production gate: when INBOUND_WEBHOOK_SECRET is set (deployed worker), the
+  // caller must present it via `X-AD-Webhook` or `Authorization: Bearer`.
+  // Unset = open, which is only correct on localhost (local dev + tests).
+  const expectedSecret = String(env.INBOUND_WEBHOOK_SECRET ?? "");
+  if (expectedSecret) {
+    const bearer = request.headers.get("authorization");
+    const presented =
+      request.headers.get("x-ad-webhook") ??
+      (bearer && bearer.startsWith("Bearer ") ? bearer.slice(7) : "");
+    if (presented !== expectedSecret) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
   let payload: BrevoWebhookPayload;
   try {
     payload = (await request.json()) as BrevoWebhookPayload;
