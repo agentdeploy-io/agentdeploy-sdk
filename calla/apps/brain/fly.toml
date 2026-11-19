@@ -8,8 +8,30 @@ primary_region = "iad"
 [env]
   PORT = "3000"
   NODE_ENV = "production"
+  # LibSQL (embedded) store on the persistent volume — user accounts, audit
+  # chain and approvals survive redeploys/restarts.
+  LIBSQL_URL = "file:/data/local.db"
 
 [[vm]]
   cpu_kind = "shared"
   cpus = 2
   memory_mb = 1024
+
+[[mounts]]
+  source = "brain-data"
+  destination = "/data"
+  type = "volume"
+
+[[services]]
+  internal_port = 3000
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/health"
+    protocol = "http"
+    port = 3000

@@ -15,3 +15,4 @@ local.db-journal
 local.db-shm
 local.db-wal
 .dev.vars
+.deploy.env
